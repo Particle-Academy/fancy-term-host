@@ -73,3 +73,6 @@ export type { ShellInfo, ShellKind, CwdHook } from "./shells";
 
 // ── OSC-7 cwd parsing (used by the manager; exported for reuse) ──────────────
 export { parseFileUrl, scanOsc7Cwd } from "./osc7";
+
+// ── Spawn-cwd normalization (MSYS→native + validate-or-home fallback) ────────
+export { toNativeCwd, resolveSpawnCwd } from "./cwd";

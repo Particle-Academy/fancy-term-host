@@ -34,6 +34,7 @@ import {
     type HostMessage,
 } from './host-protocol';
 import { socketPathFor, pidfilePath } from './host-locate';
+import { resolveSpawnCwd } from './cwd';
 
 const SCROLLBACK_MAX = 1_000_000;
 /** Self-exit after this long with no ptys AND no connected client. */
@@ -91,7 +92,10 @@ function createPty(opts: {
 
     const pty = spawn(shell, opts.args ?? [], {
         name: 'xterm-color',
-        cwd: opts.cwd,
+        // Native-convert + validate the requested dir; a stale/foreign/MSYS cwd
+        // (e.g. Git Bash's /c/Users/me) would otherwise crash spawn with Windows
+        // ERROR_DIRECTORY (267). Falls back to home if unusable.
+        cwd: resolveSpawnCwd(opts.cwd),
         cols: opts.cols ?? 80,
         rows: opts.rows ?? 24,
         env,
