@@ -26,8 +26,13 @@ jobs:
       - name: Build
         run: npm run build
 
-      # Trusted Publishing (OIDC) — no tokens. Requires npm 11.5.1+ (the runner
-      # ships npm 10.x), so fetch a fresh npm via npx. The repo's Trusted
-      # Publisher (npmjs.com → package → Access) authorizes this workflow.
+      # BOOTSTRAP (first publish only): npm won't let a Trusted Publisher be
+      # configured for a package that doesn't exist yet, so the very first
+      # release authenticates with a short-lived granular NPM_TOKEN secret.
+      # After v0.1.0 lands: add the Trusted Publisher on npmjs, revoke the
+      # token, and delete the `env:` block below to revert to tokenless OIDC.
+      # Requires npm 11.5.1+ for provenance (the runner ships npm 10.x) → npx.
       - name: Publish
         run: npx -y npm@latest publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
