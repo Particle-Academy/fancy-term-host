@@ -22,16 +22,25 @@ function shimRoot(): string {
 
 describe('shellKind', () => {
     it('classifies known shells by basename', () => {
+        // Bare + forward-slash forms classify on any platform (shellKind uses the
+        // host's path.basename — Windows-backslash paths only split on win32).
         expect(shellKind('/usr/bin/bash')).toBe('bash');
-        expect(shellKind('C:\\Program Files\\Git\\bin\\bash.exe')).toBe('bash');
+        expect(shellKind('bash')).toBe('bash');
         expect(shellKind('/bin/zsh')).toBe('zsh');
         expect(shellKind('/opt/homebrew/bin/fish')).toBe('fish');
         expect(shellKind('pwsh')).toBe('powershell');
-        expect(shellKind('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')).toBe(
-            'powershell',
-        );
-        expect(shellKind('C:\\Windows\\System32\\cmd.exe')).toBe('cmd');
+        expect(shellKind('powershell.exe')).toBe('powershell');
+        expect(shellKind('cmd.exe')).toBe('cmd');
         expect(shellKind('/usr/bin/nu')).toBe('other');
+    });
+
+    it('resolves Windows backslash paths on win32', () => {
+        if (process.platform !== 'win32') return;
+        expect(shellKind('C:\\Program Files\\Git\\bin\\bash.exe')).toBe('bash');
+        expect(
+            shellKind('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'),
+        ).toBe('powershell');
+        expect(shellKind('C:\\Windows\\System32\\cmd.exe')).toBe('cmd');
     });
 });
 
@@ -128,7 +137,7 @@ describe('cwdHookSpawn — PowerShell', () => {
 
 describe('cwdHookSpawn — cmd (best-effort)', () => {
     it('sets a PROMPT that emits OSC-7 then the normal $P$G', () => {
-        const hook = cwdHookSpawn('C:\\Windows\\System32\\cmd.exe', settings());
+        const hook = cwdHookSpawn('cmd.exe', settings());
         expect(hook.args).toEqual([]);
         expect(hook.env.PROMPT).toBe('$E]7;file:///$P$E\\$P$G');
     });
