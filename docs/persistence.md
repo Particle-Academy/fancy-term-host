@@ -57,6 +57,15 @@ their scrollback ring buffers. Because it's a different process, the shells
   setting (default **off**).
 - **Self-exit.** The host shuts itself down once it owns zero PTYs and has zero
   connected clients past an idle window, so it never lingers.
+- **Graceful shutdown.** `disconnectHostLeaveRunning()` drops the client but
+  leaves the host (and its PTYs) running for the next launch — the normal
+  before-quit path. When you instead need the host **genuinely gone** — e.g.
+  before an Electron auto-update whose installer must overwrite the binary the
+  host runs on — call `shutdownHost()`. It asks the host to kill its PTYs, remove
+  its pidfile/socket, and exit cleanly, then reverts the active backend to
+  in-process. Snapshot first (the normal T1 path) if you want history to survive;
+  this is a clean teardown, **not** a SIGKILL-by-pidfile, so the host runs its own
+  cleanup. It never throws and no-ops when no host is active.
 
 ## OSC-7 cwd tracking (Tier 1.5)
 

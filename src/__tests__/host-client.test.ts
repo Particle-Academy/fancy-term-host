@@ -47,6 +47,8 @@ interface MockHostOptions {
     seed?: Array<{ id: string; pid: number; shell: string; scrollback: string }>;
     /** Override the protocol version reported in hello-ok (for mismatch tests). */
     helloVersion?: number;
+    /** When set, the host ACKs shutdown but never closes the socket (timeout test). */
+    shutdownNoClose?: boolean;
 }
 
 /** A minimal protocol-speaking server. Returns control handles for the test. */
@@ -118,6 +120,20 @@ function startMockHost(socketPath: string, opts: MockHostOptions = {}) {
                 break;
             case 'ping':
                 send(sock, { kind: 'pong', seq: msg.seq });
+                break;
+            case 'shutdown':
+                send(sock, { kind: 'shutdown-ok', seq: msg.seq });
+                // Real host exits right after acking, closing the socket. The
+                // no-close variant lets us exercise the client's ack path / timeout.
+                if (!opts.shutdownNoClose) {
+                    setImmediate(() => {
+                        try {
+                            sock.end();
+                        } catch {
+                            /* ignore */
+                        }
+                    });
+                }
                 break;
             default:
                 break;
@@ -255,5 +271,46 @@ describe('HostClient proxying', () => {
         client.killAll();
         // Still live locally — killAll must NOT tear down host ptys.
         expect(client.isLive('a')).toBe(true);
+    });
+});
+
+describe('HostClient.shutdownHost', () => {
+    it('sends a shutdown request and resolves once the host acks + closes', async () => {
+        host = startMockHost(socketPath);
+        await host.listen();
+        client = await HostClient.connect(socketPath, noSnapshots, 2000);
+
+        // Should NOT emit a spurious error when the host closes after acking.
+        let errored = false;
+        client.on('error', () => {
+            errored = true;
+        });
+
+        await client.shutdownHost(2000);
+
+        expect(host.received.map((m) => m.kind)).toContain('shutdown');
+        expect(client.isConnected()).toBe(false);
+        expect(errored).toBe(false);
+    });
+
+    it('resolves on the ack even if the host never closes (timeout fallback)', async () => {
+        host = startMockHost(socketPath, { shutdownNoClose: true });
+        await host.listen();
+        client = await HostClient.connect(socketPath, noSnapshots, 2000);
+
+        // Host acks but holds the socket open; shutdownHost must still resolve
+        // (on the ack here, well before the timeout) and disconnect locally.
+        await client.shutdownHost(1000);
+        expect(client.isConnected()).toBe(false);
+        expect(host.received.map((m) => m.kind)).toContain('shutdown');
+    });
+
+    it('is a no-op that resolves when not connected', async () => {
+        host = startMockHost(socketPath);
+        await host.listen();
+        client = await HostClient.connect(socketPath, noSnapshots, 2000);
+        client.disconnect();
+        // No host round-trip; resolves immediately without throwing.
+        await expect(client.shutdownHost(500)).resolves.toBeUndefined();
     });
 });

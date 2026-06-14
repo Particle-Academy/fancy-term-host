@@ -97,6 +97,14 @@ describe('frame round-trip', () => {
         expect(dec.desynced).toBe(true);
     });
 
+    it('round-trips the graceful shutdown request + ack', () => {
+        const req: ClientMessage = { kind: 'shutdown', seq: 7 };
+        const ack: HostMessage = { kind: 'shutdown-ok', seq: 7 };
+        const dec = new FrameDecoder();
+        const out = dec.push(Buffer.concat([encodeFrame(req), encodeFrame(ack)]));
+        expect(out).toEqual([req, ack]);
+    });
+
     it('exposes a stable protocol version', () => {
         expect(typeof PROTOCOL_VERSION).toBe('number');
         expect(PROTOCOL_VERSION).toBeGreaterThanOrEqual(1);

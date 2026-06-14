@@ -38,6 +38,7 @@ export {
   isHostBacked,
   getHostClient,
   disconnectHostLeaveRunning,
+  shutdownHost,
 } from "./host-lifecycle";
 export { ptyHostScriptPath } from "./host-script";
 

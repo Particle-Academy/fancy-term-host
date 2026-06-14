@@ -21,7 +21,7 @@
  * refuses to attach to a host whose pidfile reports a different version and
  * spawns a fresh host instead — see host-client.ts connect-or-spawn.
  */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** Requests the client sends to the host. `seq` correlates a reply. */
 export type ClientMessage =
@@ -45,7 +45,8 @@ export type ClientMessage =
     | { kind: 'list'; seq: number }
     | { kind: 'set-retained'; id: string; retained: boolean }
     | { kind: 'get-scrollback'; seq: number; id: string }
-    | { kind: 'ping'; seq: number };
+    | { kind: 'ping'; seq: number }
+    | { kind: 'shutdown'; seq: number };
 
 /** Pushes + replies the host sends to the client. */
 export type HostMessage =
@@ -68,6 +69,7 @@ export type HostMessage =
       }
     | { kind: 'scrollback-result'; seq: number; scrollback: string | null }
     | { kind: 'pong'; seq: number }
+    | { kind: 'shutdown-ok'; seq: number }
     | { kind: 'data'; id: string; data: string }
     | { kind: 'exit'; id: string; exitCode: number; signal?: number };
 

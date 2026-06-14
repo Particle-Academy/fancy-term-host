@@ -205,3 +205,28 @@ export function disconnectHostLeaveRunning(): void {
         }
     }
 }
+
+/**
+ * Gracefully STOP the detached host (the opposite of leave-running): ask it to
+ * kill its ptys, clean up its pidfile/socket, and exit, then drop our client and
+ * revert to the in-process backend so any later create() still works.
+ *
+ * Intended for the case where a consumer needs the host genuinely gone — most
+ * notably before an Electron auto-update whose installer must overwrite the
+ * binary the detached host is running on. Snapshot first (the normal before-quit
+ * T1 path) if you want history to survive; this is a clean shutdown, NOT a
+ * SIGKILL-by-pidfile, so the host runs its own cleanup. No-op (resolves) when no
+ * host is active. NEVER throws.
+ */
+export async function shutdownHost(timeoutMs = 2000): Promise<void> {
+    const c = client;
+    usingHost = false;
+    client = null;
+    setActiveBackend(inProcessBackend());
+    if (!c) return;
+    try {
+        await c.shutdownHost(timeoutMs);
+    } catch {
+        /* a host that's already gone is a successful shutdown */
+    }
+}

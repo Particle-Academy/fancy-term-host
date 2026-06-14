@@ -258,6 +258,49 @@ export class HostClient extends EventEmitter implements PtyBackend {
         return this.connected;
     }
 
+    /**
+     * Gracefully shut the host DOWN — the deliberate counterpart to
+     * `disconnect()` (which leaves the host running). Asks the host to kill its
+     * ptys, remove its pidfile/socket, and exit cleanly, then drops the local
+     * socket. Use this when a consumer needs the host genuinely gone — e.g.
+     * before an Electron auto-update whose installer must overwrite the binary
+     * the host runs on — INSTEAD of SIGKILLing by pidfile pid, which skips the
+     * host's own cleanup.
+     *
+     * The client mirror already holds the live scrollback, so snapshot via the
+     * SnapshotStore BEFORE calling this if you want T1 history to survive.
+     *
+     * Resolves once the host acknowledges (`shutdown-ok`) or the connection
+     * closes (the host exited), whichever comes first; never rejects — a host
+     * that's already gone is a successful shutdown.
+     */
+    shutdownHost(timeoutMs = 2000): Promise<void> {
+        if (!this.socket || !this.connected) {
+            this.disconnect();
+            return Promise.resolve();
+        }
+        // Mark not-connected up front so the host's imminent socket close (it
+        // exits right after acking) doesn't surface as a spurious `error`.
+        this.connected = false;
+        return new Promise<void>((resolve) => {
+            let done = false;
+            const finish = () => {
+                if (done) return;
+                done = true;
+                clearTimeout(timer);
+                this.disconnect();
+                resolve();
+            };
+            const timer = setTimeout(finish, timeoutMs);
+            // The host exits right after acking, so the socket close races the
+            // reply — either one means the host is down. Resolve on both.
+            this.socket?.once('close', finish);
+            this.request({ kind: 'shutdown', seq: this.nextSeq() })
+                .then(finish)
+                .catch(finish);
+        });
+    }
+
     /** Disconnect WITHOUT killing host ptys (before-quit leave-running). */
     disconnect(): void {
         this.connected = false;

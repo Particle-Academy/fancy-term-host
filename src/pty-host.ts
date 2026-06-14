@@ -56,6 +56,8 @@ interface HostPty {
 const ptys = new Map<string, HostPty>();
 const clients = new Set<net.Socket>();
 let lastActivity = Date.now();
+/** The listening server, set once startServer binds — used by graceful shutdown. */
+let activeServer: net.Server | null = null;
 
 function broadcast(msg: HostMessage): void {
     const frame = encodeFrame(msg);
@@ -204,6 +206,16 @@ function handleClientMessage(sock: net.Socket, msg: ClientMessage): void {
         case 'ping':
             reply(sock, { kind: 'pong', seq: msg.seq });
             break;
+        case 'shutdown':
+            // Graceful teardown: ack first so the client can finalize (it has
+            // already snapshotted from its mirror), then kill every pty, remove
+            // the pidfile/socket, and exit promptly. This is the clean path the
+            // SIGKILL-by-pidfile interim fix can't take — it lets a consumer
+            // bring the host down deterministically (e.g. before an auto-update)
+            // instead of waiting on the 10-min idle timeout.
+            reply(sock, { kind: 'shutdown-ok', seq: msg.seq });
+            shutdown();
+            break;
     }
 }
 
@@ -254,6 +266,7 @@ function startServer(socketPath: string): void {
         sock.on('close', drop);
         sock.on('error', drop);
     });
+    activeServer = server;
 
     server.on('error', (err) => {
         // EADDRINUSE: another host beat us to it. Exit quietly — the client will
@@ -318,6 +331,29 @@ function cleanupAndExit(socketPath: string, server: net.Server): void {
         /* ignore */
     }
     process.exit(0);
+}
+
+/**
+ * Graceful host shutdown — the clean counterpart to the idle watchdog and to a
+ * SIGKILL-by-pidfile. Kills every live pty (so no orphaned shells linger), then
+ * removes the pidfile/socket, closes the server, and exits. Triggered by a
+ * `shutdown` client request; the client has already snapshotted its mirror, so
+ * tearing down the host here loses nothing.
+ */
+function shutdown(): void {
+    for (const [, e] of ptys) {
+        try {
+            e.pty.kill();
+        } catch {
+            /* already exited */
+        }
+    }
+    ptys.clear();
+    if (activeServer) {
+        cleanupAndExit(socketPath, activeServer);
+    } else {
+        process.exit(0);
+    }
 }
 
 // --- main ------------------------------------------------------------------
