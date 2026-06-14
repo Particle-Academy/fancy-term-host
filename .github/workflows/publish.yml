@@ -1,0 +1,33 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Trusted Publishing (OIDC) — no tokens. Requires npm 11.5.1+ (the runner
+      # ships npm 10.x), so fetch a fresh npm via npx. The repo's Trusted
+      # Publisher (npmjs.com → package → Access) authorizes this workflow.
+      - name: Publish
+        run: npx -y npm@latest publish --provenance --access public
