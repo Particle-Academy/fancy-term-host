@@ -86,6 +86,12 @@ Switchable behind one `PtyBackend` interface (see [`docs/persistence.md`](./docs
   that survives a full quit of the app. The backend proxies calls over a named
   pipe (Windows) / unix socket (POSIX); reopening reattaches to the still-running
   shells.
+- **T3+ — per-user OS service.** Run the pty-host as a `launchd` / `systemd
+  --user` / Windows-task service on its **own** standalone Node runtime, so an
+  Electron auto-update never pins the consumer binary — terminals survive quits
+  *and* updates. Subpath `@particle-academy/fancy-term-host/service`;
+  `ensureHostService(...)` installs-if-missing → starts, with graceful fallback.
+  See [`docs/service.md`](./docs/service.md).
 
 ### Spawning the detached host (T3)
 

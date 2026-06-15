@@ -67,6 +67,54 @@ their scrollback ring buffers. Because it's a different process, the shells
   this is a clean teardown, **not** a SIGKILL-by-pidfile, so the host runs its own
   cleanup. It never throws and no-ops when no host is active.
 
+## T3+ — per-user OS service (`/service`)
+
+The detached host above is launched with the consumer's binary (Electron-as-node,
+for node-pty's ABI). That means the running host **pins the app executable**, so
+an Electron auto-update can't overwrite it without first killing the host — and
+killing it loses the live sessions T3 exists to protect.
+
+`@particle-academy/fancy-term-host/service` fixes that by running the host as a
+**per-user OS service on its own standalone Node runtime** — never the consumer's
+binary, so an update never pins it. The wire protocol, pidfile, socket, and
+`HostClient` are all unchanged; only *who launches the host* moves.
+
+- **macOS** — a `launchd` LaunchAgent (`~/Library/LaunchAgents/<label>.plist`).
+- **Linux** — a `systemd --user` unit (`~/.config/systemd/user/<label>.service`).
+- **Windows** — a per-user **scheduled task** (`schtasks … /SC ONLOGON /RL LIMITED`,
+  no elevation) driving a small launcher `.cmd`.
+
+```ts
+import { ensureHostService } from "@particle-academy/fancy-term-host/service";
+
+const result = await ensureHostService({
+  label: "academy.particle.genie.ptyhost",
+  userDataDir: app.getPath("userData"),
+  // A STANDALONE node — never your Electron binary. Auto-resolved from
+  // $FANCY_TERM_NODE / PATH if omitted; pass one explicitly to be sure.
+  runtime: { nodePath: "/opt/genie/runtime/node", nodePtyDir: "/opt/genie/native" },
+});
+
+if (result.ok) {
+  // service is installed + running; connect with the usual HostClient path.
+} else {
+  // graceful fallback — never throws. Drop to the detached spawn (survives a
+  // normal quit) or in-process. result.error says why.
+}
+```
+
+`ensureHostService` install-if-missing-or-stale → start-if-stopped, and is
+**revision-stamped** (the default revision encodes the host `PROTOCOL_VERSION`),
+so a protocol bump reinstalls the unit instead of leaving an incompatible host
+running. Also exported: `installHostService` / `uninstallHostService` /
+`startHostService` / `stopHostService` / `isServiceInstalled` / `serviceStatus`,
+plus `resolveServiceRuntime` and the pure `buildServiceDescriptor`. Full guide +
+the node-pty ABI notes: [`docs/service.md`](./service.md).
+
+> Upgrading the service across a host-protocol bump restarts the host — snapshot
+> live sessions (the T1 path) or call `shutdownHost()` first if you need history
+> to survive the handoff.
+
 ## OSC-7 cwd tracking (Tier 1.5)
 
 So a resumed shell starts in the *right directory*, the host learns each
