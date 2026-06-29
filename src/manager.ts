@@ -120,13 +120,19 @@ class InProcessBackend extends EventEmitter implements PtyBackend {
             ...hook.env,
             ...(opts.env ?? {}),
         } as Record<string, string>;
-        // Most TUI apps key off TERM to decide whether to emit ANSI / use the
-        // alt screen. xterm.js handles xterm-256color cleanly; without this,
-        // some apps degrade to dumb mode.
+        // Most TUI apps key off TERM to decide capabilities — ANSI, the alt
+        // screen, and crucially the `Ms` (set-clipboard / OSC 52) terminfo cap
+        // that gates whether a TUI (Claude Code, tmux, vim…) COPIES via OSC 52.
+        // xterm.js handles xterm-256color cleanly; without this some apps degrade
+        // to dumb mode. NOTE: node-pty's `name` option WINS over `env.TERM`
+        // (`name = opt.name || env.TERM; env.TERM = name`), so `name` must carry
+        // the SAME value — a hardcoded `name:'xterm-color'` here silently
+        // overrode this default with a deprecated terminfo that lacks `Ms`, so
+        // OSC 52 copy never fired. Drive `name` from the resolved TERM.
         env.TERM = env.TERM || 'xterm-256color';
 
         const pty = spawn(shell, args, {
-            name: 'xterm-color',
+            name: env.TERM,
             // Native-convert + validate the requested dir; a stale/foreign/MSYS
             // cwd (e.g. Git Bash's /c/Users/me) would otherwise crash spawn with
             // Windows ERROR_DIRECTORY (267). Falls back to home if unusable.

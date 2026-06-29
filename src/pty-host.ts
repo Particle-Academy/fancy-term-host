@@ -90,10 +90,14 @@ function createPty(opts: {
     }
     const shell = opts.shell ?? defaultShell();
     const env = { ...process.env, ...(opts.env ?? {}) } as Record<string, string>;
+    // node-pty's `name` WINS over env.TERM (`name = opt.name || env.TERM; env.TERM
+    // = name`), so `name` must carry the resolved TERM — a hardcoded
+    // 'xterm-color' silently overrode this with a terminfo lacking the `Ms`
+    // (OSC 52 clipboard) cap, so TUI copy-via-OSC-52 never fired. (Detached host.)
     env.TERM = env.TERM || 'xterm-256color';
 
     const pty = spawn(shell, opts.args ?? [], {
-        name: 'xterm-color',
+        name: env.TERM,
         // Native-convert + validate the requested dir; a stale/foreign/MSYS cwd
         // (e.g. Git Bash's /c/Users/me) would otherwise crash spawn with Windows
         // ERROR_DIRECTORY (267). Falls back to home if unusable.
