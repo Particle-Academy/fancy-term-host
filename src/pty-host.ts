@@ -105,6 +105,14 @@ function createPty(opts: {
         cols: opts.cols ?? 80,
         rows: opts.rows ?? 24,
         env,
+        // Modern bundled ConPTY (conpty.dll). THIS file IS the windowless
+        // detached host (spawnDetached: a `detached` console-less node.exe), so
+        // it is exactly where #4 bites: legacy ConPTY allocates a stray VISIBLE
+        // console per shell, and its kill path forks `conpty_console_list_agent`
+        // un-hidden (console flash + "AttachConsole failed" crash). conpty.dll
+        // runs console-less correctly and takes neither fork. Windows-only;
+        // ignored elsewhere. (Mirrors InProcessBackend in manager.ts.)
+        useConptyDll: true,
     });
 
     const entry: HostPty = { pty, shell, scrollback: '' };
