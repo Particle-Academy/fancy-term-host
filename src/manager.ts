@@ -134,6 +134,23 @@ class InProcessBackend extends EventEmitter implements PtyBackend {
             cols: opts.cols ?? 80,
             rows: opts.rows ?? 24,
             env,
+            // Use node-pty's bundled MODERN ConPTY (conpty.dll + its own
+            // OpenConsole) instead of the legacy in-box conhost path. Windows-only;
+            // ignored elsewhere. This matters specifically for the DETACHED pty-host
+            // (genie-adapter spawnDetached: a windowless `detached` standalone
+            // node.exe with no console of its own):
+            //   • Legacy ConPTY, lacking a host console, allocates a NEW VISIBLE
+            //     console per shell → on Win11 (default terminal = Windows Terminal)
+            //     that surfaces as a stray WindowsTerminal window. conpty.dll does
+            //     not pop a window for a console-less host.
+            //   • The legacy KILL path forks `conpty_console_list_agent` UN-hidden
+            //     to enumerate the console process list; under the windowless host
+            //     that fork both flashes a console AND crashes with
+            //     "AttachConsole failed". The conpty.dll kill path takes neither
+            //     fork, so the crash + flash are gone.
+            // Verified deterministically: with this on, kill() spawns no agent and
+            // throws nothing; off, every kill forks the agent and it crashes.
+            useConptyDll: true,
         });
 
         this.ptys.set(opts.id, pty);
