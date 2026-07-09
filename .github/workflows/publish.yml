@@ -30,4 +30,4 @@ jobs:
       # ships npm 10.x), so fetch a fresh npm via npx. The repo's Trusted
       # Publisher (npmjs.com → package → Access) authorizes this workflow.
       - name: Publish
-        run: npx -y npm@latest publish --provenance --access public
+        run: npx -y npm@11.18.0 publish --provenance --access public
