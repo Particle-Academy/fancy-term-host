@@ -25,6 +25,23 @@ npm install @particle-academy/fancy-term-host node-pty
 `node-pty` is a **peer dependency**: you own its native build (and, under
 Electron, the `asar-unpack` so its `.node` binary loads outside the archive).
 
+### Packaging into an Electron app
+
+A packaged `node-pty` won't spawn a terminal on **any** OS until three per-OS
+rebuild gaps are patched (Windows `conpty.dll` subdir, unsigned macOS
+`spawn-helper`, Linux `+x`). `fancy-term-host` ships the fix as an
+`electron-builder` `afterPack` hook — wire it once:
+
+```js
+const { fancyTermAfterPack } = require('@particle-academy/fancy-term-host/electron');
+module.exports = {
+  asarUnpack: ['**/node_modules/node-pty/**'],
+  afterPack: (context) => fancyTermAfterPack(context),
+};
+```
+
+See [`docs/packaging.md`](./docs/packaging.md) for the full breakdown.
+
 ## Wire it up
 
 You provide four ports (see [`docs/ports.md`](./docs/ports.md)); the core does

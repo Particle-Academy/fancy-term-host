@@ -9,6 +9,9 @@ export default defineConfig({
     // Per-user OS-service layer (launchd / systemd --user / Windows task). A
     // subpath so server/web consumers never pull in the desktop service code.
     service: "src/service/index.ts",
+    // Electron-builder packaging helpers (afterPack node-pty fix-ups). A subpath
+    // so non-desktop consumers never pull in the packaging code.
+    electron: "src/electron/index.ts",
   },
   format: ["esm", "cjs"],
   dts: true,

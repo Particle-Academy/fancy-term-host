@@ -37,6 +37,16 @@
         "default": "./dist/service.cjs"
       }
     },
+    "./electron": {
+      "import": {
+        "types": "./dist/electron.d.ts",
+        "default": "./dist/electron.js"
+      },
+      "require": {
+        "types": "./dist/electron.d.cts",
+        "default": "./dist/electron.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "files": [
