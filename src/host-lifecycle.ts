@@ -2,6 +2,10 @@ import {
     readPidfile,
     pidfileUsable,
     deletePidfile,
+    isPidAlive,
+    terminateHost,
+    awaitPidGone,
+    type Pidfile,
 } from './host-locate';
 import { HostClient } from './host-client';
 import { setActiveBackend, inProcessBackend } from './manager';
@@ -98,6 +102,72 @@ async function awaitUsableHost(userData: string, timeoutMs = 4000): Promise<bool
 }
 
 /**
+ * Reap a stale/wedged host so its SINGLE-INSTANCE transport (Windows named pipe
+ * / POSIX socket) frees up, then clear the pidfile. If the recorded pid is still
+ * alive we terminate it and wait for it to exit before returning, so a fresh
+ * host won't race it for the transport. Best-effort — never throws. (#8)
+ */
+async function reapHost(userData: string, pf: Pidfile | null): Promise<void> {
+    if (pf && isPidAlive(pf.pid) && terminateHost(pf.pid)) {
+        await awaitPidGone(pf.pid, 2000);
+    }
+    deletePidfile(userData);
+}
+
+/**
+ * Connect to a healthy detached host, spawning one (and reaping any stale or
+ * wedged incumbent) as needed. Returns a connected HostClient, or null when no
+ * host could be brought up (the caller then falls back to in-process). Only the
+ * post-spawn connect can throw out; the incumbent-liveness connect is caught and
+ * recovered from here.
+ *
+ * Why the reap matters (#8): the transport is single-instance, so a wedged or
+ * old-version incumbent that still owns it deadlocks EVERY fresh spawn
+ * (EADDRINUSE) and EVERY client — it accepts the socket but never answers
+ * `hello`, so the client just times out, forever. A "usable-looking" pidfile
+ * (alive pid + matching protocol version) is therefore NOT trusted on its own:
+ * the only real proof of life is a completed handshake, and a host that fails it
+ * is reaped so a fresh one can take the transport.
+ */
+async function connectOrSpawnHost(
+    userData: string,
+    spawner: HostSpawner,
+    snapshots: SnapshotStore,
+): Promise<HostClient | null> {
+    let pf = readPidfile(userData);
+
+    if (pidfileUsable(pf)) {
+        // Looks good — but only a completed handshake proves the host is alive.
+        // A wedged host (accepts the socket, never answers hello — the #8 zombie)
+        // rejects here on timeout.
+        try {
+            return await HostClient.connect(pf!.socketPath, snapshots);
+        } catch {
+            // Usable-looking but unresponsive → reap it, then respawn below.
+            await reapHost(userData, pf);
+            pf = null;
+        }
+    } else if (pf) {
+        // Present but unusable (dead pid, or a version-mismatched host still
+        // running). If its pid is ALIVE it still owns the transport and would
+        // EADDRINUSE a fresh spawn — reap it first.
+        await reapHost(userData, pf);
+        pf = null;
+    }
+
+    // No usable host → spawn a fresh one.
+    deletePidfile(userData);
+    const hostScript = spawner.resolveHostScript();
+    if (!hostScript) return null; // packaging risk — caller toasts.
+    spawner.spawnDetached(hostScript, { GENIE_USERDATA: userData });
+    const up = await awaitUsableHost(userData);
+    if (!up) return null;
+    pf = readPidfile(userData);
+    if (!pf) return null;
+    return await HostClient.connect(pf.socketPath, snapshots);
+}
+
+/**
  * Initialise the terminal backend at app-ready. Returns the list of host pty ids
  * that should be reattached by the renderer (empty for the in-process path or a
  * cold host). NEVER throws — every failure degrades to in-process.
@@ -113,50 +183,27 @@ export async function initTerminalBackend(): Promise<{
         return { host: false, reattachIds: [] };
     }
     const { spawner, snapshots } = deps;
-
     const userData = spawner.userDataDir();
+
     try {
-        const hostScript = spawner.resolveHostScript();
-
-        // 1) Try an existing host.
-        let pf = readPidfile(userData);
-        if (!pidfileUsable(pf)) {
-            // Stale / dead / version-mismatch → clear it and spawn fresh.
-            deletePidfile(userData);
-            if (!hostScript) {
-                // Can't find the compiled host script (packaging risk). Stay
-                // in-process with a clear toast.
-                status(
-                    'Detached terminals unavailable (host not found) — using in-process. Sessions won\'t survive a full quit.',
-                );
-                return { host: false, reattachIds: [] };
-            }
-            spawner.spawnDetached(hostScript, { GENIE_USERDATA: userData });
-            const up = await awaitUsableHost(userData);
-            if (!up) {
-                status(
-                    'Detached terminals unavailable (host didn\'t start) — using in-process. Sessions won\'t survive a full quit.',
-                );
-                return { host: false, reattachIds: [] };
-            }
-            pf = readPidfile(userData);
-        }
-
-        if (!pf) {
+        const c = await connectOrSpawnHost(userData, spawner, snapshots);
+        if (!c) {
+            // Couldn't bring up a host — make sure no stale host state lingers.
+            client = null;
+            usingHost = false;
+            setActiveBackend(inProcessBackend());
             status(
                 'Detached terminals unavailable — using in-process. Sessions won\'t survive a full quit.',
             );
             return { host: false, reattachIds: [] };
         }
-
-        // 2) Connect.
-        client = await HostClient.connect(pf.socketPath, snapshots);
+        client = c;
         client.on('error', onHostError);
         setActiveBackend(client);
         usingHost = true;
         return { host: true, reattachIds: client.liveIds() };
     } catch (err) {
-        // 3) Any failure → fall back to in-process, app stays functional.
+        // Any failure → fall back to in-process, app stays functional.
         // eslint-disable-next-line no-console
         console.error('[host-lifecycle] falling back to in-process:', err);
         try {

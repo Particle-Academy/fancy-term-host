@@ -95,6 +95,47 @@ export function isPidAlive(pid: number): boolean {
 }
 
 /**
+ * Terminate a stale/wedged host process so its SINGLE-INSTANCE transport (the
+ * Windows named pipe / POSIX socket) frees up for a fresh host to bind. A wedged
+ * incumbent that still owns the pipe would otherwise EADDRINUSE every respawn and
+ * silently swallow every client `hello` — see the connect-or-spawn recovery in
+ * host-lifecycle (#8).
+ *
+ * Best-effort — never throws. Refuses `pid <= 0` and our OWN pid (so a caller
+ * that reads its own pidfile can't self-destruct). On Windows `process.kill`
+ * maps to TerminateProcess (immediate); on POSIX the default SIGTERM disposition
+ * exits the host promptly (it installs no handler). Returns true when a signal
+ * was actually delivered.
+ */
+export function terminateHost(
+    pid: number,
+    signal: NodeJS.Signals = 'SIGTERM',
+): boolean {
+    if (!pid || pid <= 0 || pid === process.pid) return false;
+    try {
+        process.kill(pid, signal);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Resolve once `pid` is gone (polling up to `timeoutMs`). Called after
+ * {@link terminateHost} so a freshly-spawned host doesn't race the reaped one
+ * for the single-instance transport. Resolves true when the pid is no longer
+ * alive, false if it outlives the timeout.
+ */
+export async function awaitPidGone(pid: number, timeoutMs = 2000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (!isPidAlive(pid)) return true;
+        await new Promise((r) => setTimeout(r, 50));
+    }
+    return !isPidAlive(pid);
+}
+
+/**
  * Decide whether an existing pidfile points at a usable host.
  * Usable = pid alive AND protocol versions match. A stale/dead/mismatched
  * pidfile means we must spawn a fresh host.
