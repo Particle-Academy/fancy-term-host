@@ -7,6 +7,8 @@ import {
     cwdHookEnv,
     shellKind,
     parseCommandLine,
+    resolveLoginShell,
+    parseDsclUserShell,
 } from '../shells';
 import type { SettingsProvider } from '../ports';
 
@@ -41,6 +43,42 @@ describe('shellKind', () => {
             shellKind('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'),
         ).toBe('powershell');
         expect(shellKind('C:\\Windows\\System32\\cmd.exe')).toBe('cmd');
+    });
+});
+
+describe('resolveLoginShell (#5 — macOS Dock-launched, no $SHELL)', () => {
+    it('prefers $SHELL when the env carries it', () => {
+        expect(
+            resolveLoginShell({ SHELL: '/bin/bash' }, 'darwin', () => '/bin/zsh'),
+        ).toBe('/bin/bash');
+    });
+
+    it('falls back to the macOS dscl lookup when $SHELL is absent (darwin)', () => {
+        expect(resolveLoginShell({}, 'darwin', () => '/opt/homebrew/bin/fish')).toBe(
+            '/opt/homebrew/bin/fish',
+        );
+    });
+
+    it('does NOT run the mac lookup on non-darwin without $SHELL', () => {
+        let called = false;
+        const r = resolveLoginShell({}, 'linux', () => {
+            called = true;
+            return '/bin/zsh';
+        });
+        expect(r).toBeNull();
+        expect(called).toBe(false);
+    });
+
+    it('returns null when neither $SHELL nor dscl resolves', () => {
+        expect(resolveLoginShell({}, 'darwin', () => null)).toBeNull();
+    });
+
+    it('parses a dscl UserShell line', () => {
+        expect(parseDsclUserShell('UserShell: /bin/bash\n')).toBe('/bin/bash');
+        expect(parseDsclUserShell('/Users/x\nUserShell: /usr/local/bin/fish')).toBe(
+            '/usr/local/bin/fish',
+        );
+        expect(parseDsclUserShell('no shell here')).toBeNull();
     });
 });
 
@@ -98,6 +136,20 @@ describe('cwdHookSpawn — zsh', () => {
         expect(rc).toContain('file://');
         // .zshenv sources the user's real env first.
         expect(fs.existsSync(path.join(dir, '.zshenv'))).toBe(true);
+    });
+
+    it('overlays ~/.zprofile too so themed prompts survive (#6)', () => {
+        const orig = process.env.ZDOTDIR || os.homedir();
+        const hook = cwdHookSpawn('/bin/zsh', settings());
+        const dir = hook.env.ZDOTDIR;
+        // The full login chain is present in the generated ZDOTDIR.
+        expect(fs.existsSync(path.join(dir, '.zshenv'))).toBe(true);
+        expect(fs.existsSync(path.join(dir, '.zprofile'))).toBe(true);
+        expect(fs.existsSync(path.join(dir, '.zshrc'))).toBe(true);
+        // The generated .zprofile sources the user's REAL ~/.zprofile (the fix).
+        const profile = fs.readFileSync(path.join(dir, '.zprofile'), 'utf8');
+        expect(profile).toContain(`${orig}/.zprofile`);
+        expect(profile).toContain('source');
     });
 });
 

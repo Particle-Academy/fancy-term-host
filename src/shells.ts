@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import type { SettingsProvider } from './ports';
 
 /**
@@ -122,6 +123,48 @@ function unixCandidates(): Array<Omit<ShellInfo, 'command'> & { paths: string[] 
     ];
 }
 
+/** Parse `dscl . -read /Users/<user> UserShell` output → the shell path.
+ *  The line reads `UserShell: /bin/zsh`. Returns null when absent/malformed. */
+export function parseDsclUserShell(output: string): string | null {
+    const m = /UserShell:\s*(\S+)/.exec(output);
+    return m ? m[1] : null;
+}
+
+/** Read the current user's login shell from macOS Directory Services. Best
+ *  effort — returns null on any failure (dscl missing, no entry, timeout). */
+function macUserShell(): string | null {
+    try {
+        const user = os.userInfo().username;
+        const out = execFileSync('dscl', ['.', '-read', `/Users/${user}`, 'UserShell'], {
+            encoding: 'utf8',
+            timeout: 2000,
+        });
+        return parseDsclUserShell(out);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * The user's real login shell.
+ *   - `$SHELL` when the launching env carries it (terminals, most launches).
+ *   - On macOS a **Dock/Finder-launched** app inherits NO `$SHELL`, and Node's
+ *     `os.userInfo().shell` is `null` there, so fall back to Directory Services
+ *     (`dscl . -read /Users/<user> UserShell`) to read the actual login shell
+ *     instead of blindly defaulting to the zsh-first candidate order.
+ * Returns an absolute shell path, or null when it can't be determined. The
+ * `env`/`platform`/`macLookup` params are injectable for tests.
+ */
+export function resolveLoginShell(
+    env: NodeJS.ProcessEnv = process.env,
+    platform: NodeJS.Platform = process.platform,
+    macLookup: () => string | null = macUserShell,
+): string | null {
+    if (env.SHELL) return env.SHELL;
+    if (platform === 'darwin') return macLookup();
+    return null;
+}
+
 export function detectShells(): ShellInfo[] {
     const candidates =
         process.platform === 'win32' ? windowsCandidates() : unixCandidates();
@@ -131,17 +174,25 @@ export function detectShells(): ShellInfo[] {
         if (command) found.push({ id: c.id, label: c.label, command, args: c.args });
     }
 
-    // Unix: surface the user's login shell even if it isn't in the probe
-    // list (e.g. a Homebrew bash that lives somewhere exotic).
+    // Unix: the user's real login shell ALWAYS wins (see resolveLoginShell —
+    // handles a Dock-launched macOS app with no $SHELL). Move it to the FRONT so
+    // defaultShellId picks it, whether it's an exotic path not in the probe list
+    // OR a probed shell that isn't first (a bash/fish login shell must not lose
+    // to the hardcoded zsh-first candidate order).
     if (process.platform !== 'win32') {
-        const login = process.env.SHELL;
-        if (login && !found.some((s) => s.command === login) && fs.existsSync(login)) {
-            found.unshift({
-                id: path.basename(login),
-                label: path.basename(login),
-                command: login,
-                args: ['-l'],
-            });
+        const login = resolveLoginShell();
+        if (login && fs.existsSync(login)) {
+            const existing = found.find((s) => s.command === login);
+            const rest = found.filter((s) => s.command !== login);
+            const head =
+                existing ?? {
+                    id: path.basename(login),
+                    label: path.basename(login),
+                    command: login,
+                    args: ['-l'],
+                };
+            found.length = 0;
+            found.push(head, ...rest);
         }
     }
     return found;
@@ -227,9 +278,10 @@ function writeShim(file: string, contents: string): boolean {
  * Coverage (all overlay, never clobber the user's own prompt/rc):
  *   - **bash** — prepend an OSC-7 `printf` to `PROMPT_COMMAND` (env only). The
  *     portable, reliable case (Git Bash on Windows, bash on POSIX).
- *   - **zsh** — point `ZDOTDIR` at a generated dir whose `.zshrc` sources the
- *     user's real `.zshrc`, restores `ZDOTDIR`, then registers a `precmd`
- *     emitter; `.zshenv` sources the user's real `.zshenv` first.
+ *   - **zsh** — point `ZDOTDIR` at a generated dir that overlays the FULL login
+ *     startup chain (`.zshenv` → `.zprofile` → `.zshrc`), each sourcing the
+ *     user's real counterpart, restores `ZDOTDIR` in `.zshrc` (so `~/.zlogin`
+ *     loads from the real dir), then registers a `precmd` emitter.
  *   - **fish** — prepend a generated dir to `XDG_DATA_DIRS` carrying a
  *     `fish/vendor_conf.d/osc7.fish` that hooks `--on-event fish_prompt`
  *     (vendor conf overlays the user's config rather than replacing it).
@@ -262,14 +314,31 @@ export function cwdHookSpawn(command: string, settings: SettingsProvider): CwdHo
     if (kind === 'zsh') {
         const orig = process.env.ZDOTDIR || os.homedir();
         const dir = hookDir();
-        // .zshenv runs for every invocation and is read from ZDOTDIR — source
-        // the user's first so their environment survives.
+        // Overlay the FULL zsh login startup chain in order, each generated file
+        // sourcing the user's real counterpart from `orig`. zsh seeks each file
+        // in the CURRENT $ZDOTDIR (this generated dir) until our .zshrc restores
+        // it, so we must provide .zprofile here too — omitting it (the old bug,
+        // #6) silently skipped a user's ~/.zprofile (PATH / prompt / theme init),
+        // breaking themed prompts. Order zsh reads: .zshenv → .zprofile (login)
+        // → .zshrc → .zlogin (login).
+        //
+        // .zshenv runs for every invocation — source the user's first so their
+        // environment survives.
         const okEnv = writeShim(
             path.join(dir, '.zshenv'),
             `# fancy-term-host (generated)\n[ -f "${orig}/.zshenv" ] && source "${orig}/.zshenv"\n`,
         );
-        // .zshrc: restore ZDOTDIR for the user's environment, source their rc,
-        // then register the OSC-7 precmd (appended → their prompt survives).
+        // .zprofile runs for LOGIN shells (we spawn with -l) before .zshrc, while
+        // $ZDOTDIR is still this generated dir — so we MUST overlay it or the
+        // user's ~/.zprofile is skipped entirely.
+        const okProfile = writeShim(
+            path.join(dir, '.zprofile'),
+            `# fancy-term-host (generated)\n[ -f "${orig}/.zprofile" ] && source "${orig}/.zprofile"\n`,
+        );
+        // .zshrc: restore ZDOTDIR for the user's environment (so their rc sees
+        // the real dir AND a later login shell reads ~/.zlogin from `orig`),
+        // source their rc, then register the OSC-7 precmd (appended → their
+        // prompt survives).
         const okRc = writeShim(
             path.join(dir, '.zshrc'),
             `# fancy-term-host (generated)\n` +
@@ -279,7 +348,7 @@ export function cwdHookSpawn(command: string, settings: SettingsProvider): CwdHo
                 `typeset -ga precmd_functions\n` +
                 `precmd_functions+=(__fth_osc7)\n`,
         );
-        return okEnv && okRc ? { env: { ZDOTDIR: dir }, args: [] } : empty;
+        return okEnv && okProfile && okRc ? { env: { ZDOTDIR: dir }, args: [] } : empty;
     }
 
     if (kind === 'fish') {
