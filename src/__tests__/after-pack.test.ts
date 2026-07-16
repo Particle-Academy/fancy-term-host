@@ -128,6 +128,111 @@ describe('fancyTermAfterPack — win32 conpty subdir', () => {
     });
 });
 
+describe('fancyTermAfterPack — win32 conpty arch selection (#9)', () => {
+    const nodePty = '/np';
+    const release = path.join(nodePty, 'build', 'Release');
+    const prebuilds = path.join(nodePty, 'prebuilds');
+    const x64 = path.join(prebuilds, 'win32-x64', 'conpty');
+    const arm64 = path.join(prebuilds, 'win32-arm64', 'conpty');
+
+    /** A node-pty that ships BOTH arch prebuilds; arm64 sorts first in readdir. */
+    function multiArchIo() {
+        return fakeIo({
+            files: [
+                path.join(arm64, 'conpty.dll'),
+                path.join(arm64, 'OpenConsole.exe'),
+                path.join(x64, 'conpty.dll'),
+                path.join(x64, 'OpenConsole.exe'),
+            ],
+            // arm64 first — the ordering that regressed x64 builds.
+            dirs: { [prebuilds]: ['win32-arm64', 'win32-x64'] },
+        });
+    }
+
+    it('picks the x64 prebuild for an x64 target even though arm64 sorts first', async () => {
+        const { io, copies } = multiArchIo();
+        const res = await fancyTermAfterPack(
+            { appOutDir: '/out', electronPlatformName: 'win32', arch: 1 /* Arch.x64 */ },
+            { nodePtyDir: nodePty },
+            io,
+        );
+        expect(res.action).toBe('fixed');
+        expect(copies.map((c) => c.src)).toEqual([
+            path.join(x64, 'conpty.dll'),
+            path.join(x64, 'OpenConsole.exe'),
+        ]);
+        expect(res.detail).toContain('win32-x64');
+    });
+
+    it('picks the arm64 prebuild for an arm64 target', async () => {
+        const { io, copies } = multiArchIo();
+        const res = await fancyTermAfterPack(
+            { appOutDir: '/out', electronPlatformName: 'win32', arch: 3 /* Arch.arm64 */ },
+            { nodePtyDir: nodePty },
+            io,
+        );
+        expect(res.ok).toBe(true);
+        expect(copies.every((c) => c.src.startsWith(arm64))).toBe(true);
+    });
+
+    it('honors an opts.arch string override', async () => {
+        const { io, copies } = multiArchIo();
+        const res = await fancyTermAfterPack(
+            { appOutDir: '/out', electronPlatformName: 'win32' /* no context.arch */ },
+            { nodePtyDir: nodePty, arch: 'x64' },
+            io,
+        );
+        expect(res.ok).toBe(true);
+        expect(copies.every((c) => c.src.startsWith(x64))).toBe(true);
+    });
+
+    it('honors an explicit opts.conptySource override', async () => {
+        const custom = path.join(nodePty, 'third_party', 'conpty');
+        const { io, copies } = fakeIo({
+            files: [path.join(custom, 'conpty.dll'), path.join(custom, 'OpenConsole.exe')],
+        });
+        const res = await fancyTermAfterPack(
+            { appOutDir: '/out', electronPlatformName: 'win32', arch: 1 },
+            { nodePtyDir: nodePty, conptySource: custom },
+            io,
+        );
+        expect(res.ok).toBe(true);
+        expect(copies.every((c) => c.src.startsWith(custom))).toBe(true);
+    });
+
+    it('falls back to the first prebuild when the target arch dir is absent', async () => {
+        // Only arm64 shipped; x64 target has no matching prebuild → best-effort first match.
+        const { io, copies } = fakeIo({
+            files: [path.join(arm64, 'conpty.dll'), path.join(arm64, 'OpenConsole.exe')],
+            dirs: { [prebuilds]: ['win32-arm64'] },
+        });
+        const res = await fancyTermAfterPack(
+            { appOutDir: '/out', electronPlatformName: 'win32', arch: 1 },
+            { nodePtyDir: nodePty },
+            io,
+        );
+        expect(res.ok).toBe(true);
+        expect(copies.every((c) => c.src.startsWith(arm64))).toBe(true);
+    });
+
+    it('still works for a single-arch install with no arch hint', async () => {
+        const { io, copies } = fakeIo({
+            files: [path.join(x64, 'conpty.dll'), path.join(x64, 'OpenConsole.exe')],
+            dirs: { [prebuilds]: ['win32-x64'] },
+        });
+        const res = await fancyTermAfterPack(
+            { appOutDir: '/out', electronPlatformName: 'win32' },
+            { nodePtyDir: nodePty },
+            io,
+        );
+        expect(res.ok).toBe(true);
+        expect(copies.map((c) => c.dest)).toEqual([
+            path.join(release, 'conpty', 'conpty.dll'),
+            path.join(release, 'conpty', 'OpenConsole.exe'),
+        ]);
+    });
+});
+
 describe('fancyTermAfterPack — darwin spawn-helper signing', () => {
     const nodePty = '/np';
     const helper = path.join(nodePty, 'build', 'Release', 'spawn-helper');

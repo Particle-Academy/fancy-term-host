@@ -58,6 +58,20 @@ can't find node-pty under the packed app, it returns `{ action: 'skipped', ok:
 false }` — check your `asarUnpack` glob, or pass an explicit dir:
 `fancyTermAfterPack(context, { nodePtyDir })`.
 
+### Windows arch selection
+
+`conpty.dll` is **per-arch machine code** — the x64 and arm64 dlls are not
+interchangeable. When `node-pty` ships more than one prebuild
+(`prebuilds/win32-x64/`, `prebuilds/win32-arm64/`), the helper copies the one
+matching the build's **target arch** (`context.arch`), so an x64 app never gets
+the arm64 dll (which would fail `LoadLibrary` and spawn no terminal). Override
+the arch or pin the source explicitly if needed:
+
+```js
+fancyTermAfterPack(context, { arch: 'x64' });          // force the arch name
+fancyTermAfterPack(context, { conptySource: '/abs/dir' }); // pin the source dir
+```
+
 ### macOS signing note
 
 The hook **ad-hoc** signs `spawn-helper` (`codesign --force --sign -`) so it runs
@@ -72,10 +86,11 @@ If you'd rather inline it, this is exactly what the helper runs against the
 packaged `node-pty` (`…/Resources/app.asar.unpacked/node_modules/node-pty`):
 
 ```sh
-# Windows — create the conpty subdir node-pty LoadLibrary's
+# Windows — create the conpty subdir node-pty LoadLibrary's.
+# Use YOUR target arch (win32-x64 / win32-arm64) — the dlls are not interchangeable.
 mkdir -p build/Release/conpty
-cp prebuilds/win32-*/conpty/conpty.dll      build/Release/conpty/
-cp prebuilds/win32-*/conpty/OpenConsole.exe build/Release/conpty/
+cp prebuilds/win32-x64/conpty/conpty.dll      build/Release/conpty/
+cp prebuilds/win32-x64/conpty/OpenConsole.exe build/Release/conpty/
 # (falls back to third_party/conpty/ when prebuilds/ is absent)
 
 # macOS — ad-hoc sign spawn-helper so arm64 doesn't SIGKILL it

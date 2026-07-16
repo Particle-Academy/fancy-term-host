@@ -39,6 +39,13 @@ export interface AfterPackContext {
     appOutDir: string;
     /** `'darwin' | 'win32' | 'linux'` — the platform being packed. */
     electronPlatformName: string;
+    /**
+     * The target architecture being packed — electron-builder's `Arch` enum
+     * (`ia32=0, x64=1, armv7l=2, arm64=3, universal=4`). Used to pick the
+     * matching `conpty.dll` prebuild on Windows (#9). A string arch name
+     * (`'x64'`, `'arm64'`, …) is also accepted.
+     */
+    arch?: number | string;
 }
 
 export interface AfterPackOptions {
@@ -46,6 +53,16 @@ export interface AfterPackOptions {
     platform?: string;
     /** Explicit node-pty package dir; skips the search under `appOutDir`. */
     nodePtyDir?: string;
+    /**
+     * Override the target arch name (`'x64'`, `'arm64'`, `'ia32'`, …) used to
+     * select the Windows `conpty` prebuild. Defaults to `context.arch`.
+     */
+    arch?: string;
+    /**
+     * Pin the conpty source dir outright, skipping prebuild discovery. Use when
+     * your `conpty.dll` + `OpenConsole.exe` live somewhere non-standard.
+     */
+    conptySource?: string;
 }
 
 export type AfterPackAction = 'fixed' | 'already-present' | 'skipped' | 'failed';
@@ -142,9 +159,41 @@ export function resolveNodePtyDir(
     return null;
 }
 
-/** Find the conpty asset source dir (`prebuilds/<plat>/conpty` or `third_party/conpty`). */
-function findConptySource(nodePty: string, io: AfterPackIo): string | null {
+/** electron-builder `Arch` enum → Node/node-pty arch name (used in prebuild dirs). */
+const ARCH_ENUM_NAMES: Record<number, string> = {
+    0: 'ia32',
+    1: 'x64',
+    2: 'armv7l',
+    3: 'arm64',
+    4: 'universal',
+};
+
+/** The target arch name to match a prebuild against: opts override → context.arch. */
+function targetArchName(context: AfterPackContext, opts: AfterPackOptions): string | undefined {
+    if (opts.arch) return opts.arch;
+    const a = context.arch;
+    if (typeof a === 'string') return a;
+    if (typeof a === 'number') return ARCH_ENUM_NAMES[a];
+    return undefined;
+}
+
+/**
+ * Find the conpty asset source dir (`prebuilds/<plat>-<arch>/conpty` or
+ * `third_party/conpty`).
+ *
+ * When `preferDir` is given (e.g. `win32-x64`), that arch-specific prebuild wins
+ * — node-pty ships a `conpty.dll` per arch (distinct machine code, NOT
+ * interchangeable), and an x64 app given the arm64 dll can't `LoadLibrary` it,
+ * so no terminal spawns (#9). We fall back to the first prebuild carrying a
+ * `conpty.dll` only for single-arch installs or when the target arch's prebuild
+ * is genuinely absent.
+ */
+function findConptySource(nodePty: string, io: AfterPackIo, preferDir?: string | null): string | null {
     const prebuilds = path.join(nodePty, 'prebuilds');
+    if (preferDir) {
+        const c = path.join(prebuilds, preferDir, 'conpty');
+        if (io.exists(path.join(c, 'conpty.dll'))) return c;
+    }
     for (const name of io.readdir(prebuilds)) {
         const c = path.join(prebuilds, name, 'conpty');
         if (io.exists(path.join(c, 'conpty.dll'))) return c;
@@ -156,12 +205,17 @@ function findConptySource(nodePty: string, io: AfterPackIo): string | null {
 
 const CONPTY_ASSETS = ['conpty.dll', 'OpenConsole.exe'];
 
-function winFixConpty(nodePty: string, release: string, io: AfterPackIo): AfterPackResult {
+function winFixConpty(
+    nodePty: string,
+    release: string,
+    io: AfterPackIo,
+    select: { archDir?: string | null; conptySource?: string | null } = {},
+): AfterPackResult {
     const destDir = path.join(release, 'conpty');
     if (CONPTY_ASSETS.every((f) => io.exists(path.join(destDir, f)))) {
         return { platform: 'win32', action: 'already-present', ok: true };
     }
-    const src = findConptySource(nodePty, io);
+    const src = select.conptySource ?? findConptySource(nodePty, io, select.archDir);
     if (!src) {
         return {
             platform: 'win32',
@@ -231,8 +285,13 @@ export async function fancyTermAfterPack(
     }
     const release = path.join(nodePty, 'build', 'Release');
     switch (platform) {
-        case 'win32':
-            return winFixConpty(nodePty, release, io);
+        case 'win32': {
+            const archName = targetArchName(context, opts);
+            return winFixConpty(nodePty, release, io, {
+                archDir: archName ? `${platform}-${archName}` : null,
+                conptySource: opts.conptySource,
+            });
+        }
         case 'darwin':
             return macSignSpawnHelper(release, io);
         case 'linux':
