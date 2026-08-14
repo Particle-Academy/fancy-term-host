@@ -41,6 +41,29 @@ import type { SnapshotStore } from './sessions';
 
 const SCROLLBACK_MAX = 1_000_000;
 
+/**
+ * How long a correlated request waits before giving up. Generous, because a
+ * `get-scrollback` on a busy pty is real work — the point is to bound the wait,
+ * not to be strict about it.
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * How often the client pings the host. The host has always answered `ping` with
+ * `pong`; nothing ever sent one, so a hung host was undetectable. This is the
+ * only signal that distinguishes "host is wedged" from "host is idle", since a
+ * wedged host holds its socket open.
+ */
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
+
+/** Tunables for {@link HostClient.connect}. */
+export interface HostClientOptions {
+    /** Bound on a correlated request. Default 10s. */
+    requestTimeoutMs?: number;
+    /** Heartbeat period. Default 5s. Set to 0 to disable the heartbeat. */
+    heartbeatIntervalMs?: number;
+}
+
 interface MirrorEntry {
     pid: number;
     shell: string;
@@ -51,7 +74,20 @@ export class HostClient extends EventEmitter implements PtyBackend {
     private socket: net.Socket | null = null;
     private readonly decoder = new FrameDecoder();
     private seq = 0;
-    private readonly pending = new Map<number, (msg: HostMessage) => void>();
+    /**
+     * In-flight requests. Each carries its rejector and timeout handle, not just
+     * a resolver: a request that can only ever be RESOLVED is a request that
+     * hangs forever when the host stops answering, which is exactly what a
+     * wedged host does (its `uncaughtException` handler is non-fatal, so the
+     * socket stays open and no close/error path ever fires).
+     */
+    private readonly pending = new Map<
+        number,
+        { resolve: (msg: HostMessage) => void; reject: (err: Error) => void; timer: NodeJS.Timeout }
+    >();
+
+    private heartbeat: NodeJS.Timeout | null = null;
+    private requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS;
 
     private readonly mirror = new Map<string, MirrorEntry>();
     private readonly retained = new Set<string>();
@@ -79,9 +115,12 @@ export class HostClient extends EventEmitter implements PtyBackend {
         socketPath: string,
         snapshots: SnapshotStore,
         timeoutMs = 3000,
+        options: HostClientOptions = {},
     ): Promise<HostClient> {
         return new Promise<HostClient>((resolve, reject) => {
             const client = new HostClient(socketPath, snapshots);
+            client.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+            const heartbeatMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
             const sock = net.createConnection(socketPath);
             let settled = false;
             const timer = setTimeout(() => {
@@ -122,6 +161,7 @@ export class HostClient extends EventEmitter implements PtyBackend {
                     client.hostPid = hello.pid;
                     client.connected = true;
                     await client.seedFromHost();
+                    client.startHeartbeat(heartbeatMs);
                     settled = true;
                     clearTimeout(timer);
                     resolve(client);
@@ -149,6 +189,10 @@ export class HostClient extends EventEmitter implements PtyBackend {
             for (const frame of frames) this.handleHostMessage(frame as HostMessage);
         });
         sock.on('close', () => {
+            this.stopHeartbeat();
+            // In-flight requests can never be answered now; fail them rather
+            // than leaving each to time out against a socket that is gone.
+            this.rejectAllPending(new Error('pty-host connection closed'));
             if (this.connected) {
                 this.connected = false;
                 this.emit('error', new Error('pty-host connection closed'));
@@ -159,6 +203,8 @@ export class HostClient extends EventEmitter implements PtyBackend {
     private handleSocketError(err: Error): void {
         if (!this.connected) return;
         this.connected = false;
+        this.stopHeartbeat();
+        this.rejectAllPending(err);
         this.emit('error', err);
     }
 
@@ -187,10 +233,10 @@ export class HostClient extends EventEmitter implements PtyBackend {
                 // Replies carry a seq — resolve the matching pending request.
                 const seq = (msg as { seq?: number }).seq;
                 if (seq != null) {
-                    const resolver = this.pending.get(seq);
-                    if (resolver) {
-                        this.pending.delete(seq);
-                        resolver(msg);
+                    const entry = this.pending.get(seq);
+                    if (entry) {
+                        this.clearPending(seq);
+                        entry.resolve(msg);
                     }
                 }
             }
@@ -208,14 +254,78 @@ export class HostClient extends EventEmitter implements PtyBackend {
                 reject(new Error('pty-host not connected'));
                 return;
             }
-            this.pending.set(msg.seq, resolve);
+            // Bounded. Without this a wedged host — socket open, answering
+            // nothing — left `create` / `list` / `get-scrollback` pending
+            // forever, and the caller had no way to tell that from slow.
+            const timer = setTimeout(() => {
+                this.pending.delete(msg.seq);
+                reject(new Error(`pty-host request "${msg.kind}" timed out after ${this.requestTimeoutMs}ms`));
+            }, this.requestTimeoutMs);
+            timer.unref?.();
+
+            this.pending.set(msg.seq, { resolve, reject, timer });
             try {
                 this.socket.write(encodeFrame(msg));
             } catch (err) {
-                this.pending.delete(msg.seq);
+                this.clearPending(msg.seq);
                 reject(err as Error);
             }
         });
+    }
+
+    private clearPending(seq: number): void {
+        const entry = this.pending.get(seq);
+        if (!entry) return;
+        clearTimeout(entry.timer);
+        this.pending.delete(seq);
+    }
+
+    /**
+     * Fail every in-flight request. Called when the connection is known to be
+     * gone, so callers hear about it immediately instead of waiting out each
+     * individual timeout on a socket that can no longer answer.
+     */
+    private rejectAllPending(err: Error): void {
+        const entries = [...this.pending.entries()];
+        this.pending.clear();
+        for (const [, entry] of entries) {
+            clearTimeout(entry.timer);
+            entry.reject(err);
+        }
+    }
+
+    /**
+     * Ping the host on an interval and treat a missed pong as a host loss.
+     *
+     * This is what makes a HUNG host detectable at all. A cleanly-dying host
+     * closes its socket and the existing `'close'` handler fires; a wedged one
+     * does not, so without an active probe there is no event to bind to and the
+     * consumer just sees every terminal stop responding.
+     *
+     * The ping rides `request()`, so the bounded request timeout is also the
+     * liveness timeout — one mechanism, not two that can disagree.
+     */
+    private startHeartbeat(intervalMs: number): void {
+        if (intervalMs <= 0) return;
+        this.stopHeartbeat();
+        this.heartbeat = setInterval(() => {
+            if (!this.connected || !this.socket) return;
+            void this.request({ kind: 'ping', seq: this.nextSeq() }).catch((err: Error) => {
+                // Only a live client can be "lost"; handleSocketError is a no-op
+                // once disconnected, so a late rejection during teardown is safe.
+                this.handleSocketError(
+                    new Error(`pty-host heartbeat failed: ${err.message}`),
+                );
+            });
+        }, intervalMs);
+        this.heartbeat.unref?.();
+    }
+
+    private stopHeartbeat(): void {
+        if (this.heartbeat) {
+            clearInterval(this.heartbeat);
+            this.heartbeat = null;
+        }
     }
 
     /** Fire-and-forget send for messages with no reply (write/resize/kill/…). */
@@ -304,6 +414,8 @@ export class HostClient extends EventEmitter implements PtyBackend {
     /** Disconnect WITHOUT killing host ptys (before-quit leave-running). */
     disconnect(): void {
         this.connected = false;
+        this.stopHeartbeat();
+        this.rejectAllPending(new Error('pty-host client disconnected'));
         if (this.socket) {
             try {
                 this.socket.end();

@@ -97,6 +97,53 @@ describe('windows-task descriptor', () => {
         expect(d.unitContents).toContain(`fancy-term-service-revision: ${SERVICE_REVISION}`);
     });
 
+    /**
+     * Issue #10. The pty-host is single-instance and shared by every terminal
+     * in a consumer app, so when it dies the whole fleet freezes at once. On
+     * Windows there was NO trace of why: the `.cmd` ran node with no
+     * redirection, and consumers on locked-down machines (where `schtasks
+     * /Create` is policy-denied) launch it via a hidden `wscript`, whose
+     * inherited console is discarded. A crash left literally nothing behind.
+     *
+     * 0.4.0 added `logDir` and wired stdio capture for launchd and systemd, and
+     * `windowsTask()` was simply never updated — it is the one platform that
+     * never read the config field added for exactly this.
+     *
+     * `<nul` matters as much as the redirection: it detaches stdin, hardening
+     * against an unexpected stdin EOF, which is the same failure class that
+     * produces a silent EPIPE exit.
+     */
+    const win = buildServiceDescriptor(
+        {
+            ...base,
+            userDataDir: 'C:/Users/u/AppData/Roaming/Genie',
+            logDir: 'C:/Users/u/AppData/Roaming/Genie/logs',
+        },
+        { platform: 'windows-task' },
+    );
+
+    it('captures the host stdout and stderr into logDir', () => {
+        expect(win.unitContents).toContain('1>>"C:\\Users\\u\\AppData\\Roaming\\Genie\\logs\\ptyhost.out.log"');
+        expect(win.unitContents).toContain('2>>"C:\\Users\\u\\AppData\\Roaming\\Genie\\logs\\ptyhost.err.log"');
+    });
+
+    it('detaches stdin so an EOF read cannot kill the host silently', () => {
+        expect(win.unitContents).toContain('<nul');
+    });
+
+    it('keeps redirection on the same line as the host invocation', () => {
+        // A redirection on its own line redirects nothing. Assert the operators
+        // sit on the line that actually launches node.
+        const line = win.unitContents
+            .split(/\r?\n/)
+            .find((l) => l.includes(base.hostScript));
+
+        expect(line).toBeDefined();
+        expect(line).toContain('1>>');
+        expect(line).toContain('2>>');
+        expect(line).toContain('<nul');
+    });
+
     it('registers a per-user ONLOGON task with no elevation', () => {
         const create = d.installArgv[0];
         expect(create).toContain('schtasks');

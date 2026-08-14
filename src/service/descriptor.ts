@@ -246,11 +246,24 @@ function windowsTask(config: ResolvedServiceConfig): ServiceDescriptor {
     const setLines = Object.entries(env)
         .map(([k, v]) => `set "${k}=${v}"`)
         .join('\r\n');
+
+    // Capture the host's stdio, exactly as the launchd and systemd descriptors
+    // already do. Without this a host death on Windows leaves NO trace: this
+    // launcher is run through a hidden `wscript` on machines where
+    // `schtasks /Create` is policy-denied, and that discards the inherited
+    // console. Since one host backs every terminal in the consumer app, the
+    // symptom is "all terminals froze, no sign of a crash".
+    //
+    // `<nul` detaches stdin so an unexpected EOF read cannot end the process
+    // silently — the same failure class that produces a bare EPIPE exit.
+    const outLog = path.win32.join(config.logDir, 'ptyhost.out.log');
+    const errLog = path.win32.join(config.logDir, 'ptyhost.err.log');
+
     const contents = [
         '@echo off',
         `rem ${REVISION_MARKER}: ${config.revision}`,
         setLines,
-        `"${config.runtime.nodePath}" "${config.hostScript}"`,
+        `"${config.runtime.nodePath}" "${config.hostScript}" 1>>"${outLog}" 2>>"${errLog}" <nul`,
         '',
     ].join('\r\n');
 

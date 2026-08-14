@@ -55,6 +55,11 @@ interface MockHostOptions {
 function startMockHost(socketPath: string, opts: MockHostOptions = {}) {
     const sockets = new Set<net.Socket>();
     const received: ClientMessage[] = [];
+    // A WEDGED host: still connected, still holding the socket open, but no
+    // longer answering anything. This is the failure mode issue #11 is about --
+    // the host's `uncaughtException` handler is non-fatal, so a hung host never
+    // closes its socket and every close/error path stays silent.
+    let wedged = false;
     const seed = new Map(
         (opts.seed ?? []).map((s) => [s.id, s] as const),
     );
@@ -78,6 +83,7 @@ function startMockHost(socketPath: string, opts: MockHostOptions = {}) {
     }
 
     function handle(sock: net.Socket, msg: ClientMessage) {
+        if (wedged) return; // socket stays open; nothing is ever answered
         switch (msg.kind) {
             case 'hello':
                 send(sock, {
@@ -143,6 +149,10 @@ function startMockHost(socketPath: string, opts: MockHostOptions = {}) {
     return {
         server,
         received,
+        /** Stop answering anything, without closing the socket. */
+        wedge() {
+            wedged = true;
+        },
         /** Push a data/exit message to all connected clients. */
         push(msg: HostMessage) {
             for (const s of sockets) s.write(encodeFrame(msg));
@@ -312,5 +322,88 @@ describe('HostClient.shutdownHost', () => {
         client.disconnect();
         // No host round-trip; resolves immediately without throwing.
         await expect(client.shutdownHost(500)).resolves.toBeUndefined();
+    });
+});
+
+/**
+ * Issue #11 — liveness of a HUNG host.
+ *
+ * The pty-host is one process backing every terminal in a consumer's session,
+ * and the package had no active liveness detection of it. Two things made a
+ * wedged host completely invisible:
+ *
+ *   - the host's `uncaughtException` handler is non-fatal, so a wedged host
+ *     keeps its socket OPEN — no 'close', no 'error', nothing for a consumer
+ *     to bind to;
+ *   - `request()` registered a pending resolver with no timeout, so a `list` /
+ *     `get-scrollback` / `create` against that host hung FOREVER.
+ *
+ * The downstream shape is "all terminals froze at once, no sign of a crash".
+ *
+ * A ping/pong protocol already existed on both sides — the host answers `ping`
+ * with `pong` — and the client simply never sent one. So the detection here is
+ * not new protocol, it is using what was already there.
+ */
+describe('liveness — a hung host is detectable', () => {
+    it('sends heartbeat pings once connected', async () => {
+        host = startMockHost(socketPath);
+        await host.listen();
+        client = await HostClient.connect(socketPath, noSnapshots, 2000, {
+            heartbeatIntervalMs: 40,
+            requestTimeoutMs: 500,
+        });
+
+        await new Promise((r) => setTimeout(r, 200));
+
+        expect(host.received.some((m) => m.kind === 'ping')).toBe(true);
+    });
+
+    it('emits error when the host stops answering pings but holds the socket open', async () => {
+        host = startMockHost(socketPath);
+        await host.listen();
+        client = await HostClient.connect(socketPath, noSnapshots, 2000, {
+            heartbeatIntervalMs: 40,
+            requestTimeoutMs: 150,
+        });
+
+        const lost = new Promise<Error>((resolve) => {
+            client!.once('error', resolve);
+        });
+
+        host.wedge(); // socket stays open; nothing is answered ever again
+
+        const err = await lost;
+        expect(err).toBeInstanceOf(Error);
+        expect(client!.isConnected()).toBe(false);
+    });
+
+    it('fails the connect when a host accepts the socket but never answers', async () => {
+        // Wedged before the handshake: the socket connects, so a plain
+        // connection check says "fine", and `hello` is never answered.
+        host = startMockHost(socketPath);
+        await host.listen();
+        host.wedge();
+
+        await expect(
+            HostClient.connect(socketPath, noSnapshots, 400, { requestTimeoutMs: 200 }),
+        ).rejects.toBeTruthy();
+    });
+
+    it('still resolves shutdownHost against a wedged host', async () => {
+        // `shutdownHost` resolves on ack OR socket close, and now also has its
+        // in-flight request rejected during teardown. That rejection must not
+        // escape as an unhandled error or re-settle the promise -- a host that
+        // is already unreachable is a SUCCESSFUL shutdown by contract.
+        host = startMockHost(socketPath);
+        await host.listen();
+        client = await HostClient.connect(socketPath, noSnapshots, 2000, {
+            heartbeatIntervalMs: 10_000,
+            requestTimeoutMs: 150,
+        });
+
+        host.wedge();
+
+        await expect(client.shutdownHost(400)).resolves.toBeUndefined();
+        expect(client.isConnected()).toBe(false);
     });
 });
