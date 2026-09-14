@@ -1,6 +1,6 @@
-<p align="left"><img src="./art/fancy-ui.svg" alt="Fancy UI" height="28"></p>
-
 # @particle-academy/fancy-term-host
+
+[![Fancified](art/fancified.svg)](https://particle.academy)
 
 **The headless Node terminal backend for [`@particle-academy/fancy-term`](https://www.npmjs.com/package/@particle-academy/fancy-term).**
 
