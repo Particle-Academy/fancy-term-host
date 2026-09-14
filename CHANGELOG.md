@@ -15,6 +15,16 @@ upgrading.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-09-14
+
+### Added
+
+- **`@particle-academy/fancy-term-host/ipc`: the transport with no native module** (#12). The framing codec (`encodeFrame`, `FrameDecoder`, `MAX_FRAME`) and the per-user pipe/socket and pidfile helpers were always free of native code, but the only entry exporting them was the root, and its bundle opens with `import { spawn } from 'node-pty'`. A second per-user host that must ship without native dependencies had to load node-pty or copy the code. The new subpath loads neither node-pty nor electron, which a test checks on a fresh build of the package, and it is the same implementation the pty-host uses, not a copy.
+- **The codec is generic.** `encodeFrame<T>(msg)` and `new FrameDecoder<T>().push(): T[]` carry a caller's own message union, with no cast through the pty-host's `Frame`. The root entry's `encodeFrame` and `FrameDecoder` keep their `Frame` typing.
+- **Hosts can be named.** `socketPathFor`, `pidfilePath`, `writePidfile`, `readPidfile` and `deletePidfile` take an optional `name`, so a second host gets its own pipe (`genie-<name>-<userhash>`), socket (`<name>.sock`, with the same short-path fallback) and pidfile (`<name>.json`). An invalid name throws a `TypeError` rather than being cleaned up. `pidfileUsable(pf, protocolVersion)` checks a pidfile against the reader's own protocol version. `DEFAULT_HOST_NAME` (`'ptyhost'`) is exported.
+
+  **What you must do:** nothing. Every new parameter is optional and defaults to the pty-host, whose pipe, socket, pidfile and wire format (`PROTOCOL_VERSION` 2) are unchanged.
+
 ## [0.5.0] — 2026-08-14
 
 ### Fixed

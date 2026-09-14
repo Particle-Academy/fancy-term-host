@@ -44,6 +44,7 @@ export { ptyHostScriptPath } from "./host-script";
 
 // ── Detached-host transport address + pidfile resolution ────────────────────
 export {
+  DEFAULT_HOST_NAME,
   socketPathFor,
   pidfilePath,
   writePidfile,

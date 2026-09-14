@@ -5,15 +5,15 @@
  * (main/terminal/host-client.ts) talk over a local IPC transport — a named pipe
  * on Windows, a unix domain socket on POSIX — using a tiny length-prefixed JSON
  * framing so there's no heavy dependency. This module is PURE (no electron, no
- * node-pty, no net): just the message shapes + the encode/decode for the framing,
- * so it can be imported by both ends AND unit-tested in isolation.
+ * node-pty, no net): just the message shapes + the framing typed to them, so it
+ * can be imported by both ends AND unit-tested in isolation.
  *
- * Framing: each message is `[4-byte big-endian uint32 length][utf8 JSON body]`.
- * The length prefix is the byte length of the JSON body. A FrameDecoder buffers
- * partial reads and yields whole messages as they complete — TCP/pipe streams
- * don't preserve message boundaries, so we can't assume one `data` event == one
- * message.
+ * The framing itself lives in `ipc/frame.ts`, which the `./ipc` subpath also
+ * exports for a second per-user host (#12). What is here only NARROWS it to the
+ * pty-host's messages — it is not a second copy of it.
  */
+
+import { encodeFrame as encodeAnyFrame, FrameDecoder as AnyFrameDecoder } from './ipc/frame';
 
 /**
  * Protocol version. Bumped whenever the message shapes change in a way that
@@ -75,60 +75,15 @@ export type HostMessage =
 
 export type Frame = ClientMessage | HostMessage;
 
-const LENGTH_BYTES = 4;
-
-/** Encode a message as a length-prefixed JSON frame ready for the socket. */
+/** Encode a pty-host message as a length-prefixed JSON frame. */
 export function encodeFrame(msg: Frame): Buffer {
-    const body = Buffer.from(JSON.stringify(msg), 'utf8');
-    const header = Buffer.allocUnsafe(LENGTH_BYTES);
-    header.writeUInt32BE(body.length, 0);
-    return Buffer.concat([header, body]);
+    return encodeAnyFrame(msg);
 }
 
 /**
- * Streaming frame decoder. Feed it raw socket chunks via `push`; it returns the
- * complete messages that became available (zero or more), buffering any partial
- * tail until the rest arrives. One decoder per socket.
- *
- * Resilient by design: a malformed JSON body is skipped (the frame is consumed
- * but yields nothing) rather than throwing — a corrupt frame must not wedge the
- * whole stream. An absurd length prefix (> MAX_FRAME) is treated as a desync and
- * the buffer is reset; the caller can decide whether to drop the connection.
+ * The frame decoder, yielding pty-host messages. A subclass rather than an
+ * alias so `new FrameDecoder()` keeps returning `Frame[]` for existing callers;
+ * the behaviour (partial reads, skipped corrupt frames, the `MAX_FRAME` desync)
+ * is entirely the base class's.
  */
-export class FrameDecoder {
-    private buffer: Buffer = Buffer.alloc(0);
-
-    /** Hard cap on a single frame (16 MB). Guards against a runaway/garbage
-     *  length prefix allocating unbounded memory. node-pty data chunks are tiny;
-     *  a serialized scrollback is bounded well under this. */
-    static readonly MAX_FRAME = 16 * 1024 * 1024;
-
-    /** True when the last push hit an oversized/desynced frame. The caller
-     *  should drop the connection — the stream can't be trusted to realign. */
-    desynced = false;
-
-    push(chunk: Buffer): Frame[] {
-        this.buffer = this.buffer.length ? Buffer.concat([this.buffer, chunk]) : chunk;
-        const out: Frame[] = [];
-        for (;;) {
-            if (this.buffer.length < LENGTH_BYTES) break;
-            const len = this.buffer.readUInt32BE(0);
-            if (len > FrameDecoder.MAX_FRAME) {
-                // Desync / garbage. Reset and flag — realigning a length-prefixed
-                // stream after a bad prefix isn't possible without a sentinel.
-                this.desynced = true;
-                this.buffer = Buffer.alloc(0);
-                break;
-            }
-            if (this.buffer.length < LENGTH_BYTES + len) break; // wait for more
-            const body = this.buffer.subarray(LENGTH_BYTES, LENGTH_BYTES + len);
-            this.buffer = this.buffer.subarray(LENGTH_BYTES + len);
-            try {
-                out.push(JSON.parse(body.toString('utf8')) as Frame);
-            } catch {
-                /* skip a corrupt frame; the framing itself is still aligned */
-            }
-        }
-        return out;
-    }
-}
+export class FrameDecoder extends AnyFrameDecoder<Frame> {}

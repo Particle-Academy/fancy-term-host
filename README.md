@@ -129,6 +129,33 @@ Wrap that in a `HostSpawner` and pass it to `configureHostLifecycle(...)` to let
 the core connect-or-spawn-or-fall-back automatically. (`require.resolve(
 "@particle-academy/fancy-term-host/pty-host")` also resolves the script.)
 
+### Reusing the transport for another host
+
+The pty-host's framing and per-user pipe/pidfile helpers are exported from
+`@particle-academy/fancy-term-host/ipc`, which loads **no native module**, so a
+second per-user background process can use them without node-pty:
+
+```ts
+import net from "node:net";
+import { encodeFrame, FrameDecoder, socketPathFor, writePidfile } from "@particle-academy/fancy-term-host/ipc";
+
+type Msg = { kind: "call"; seq: number; tool: string } | { kind: "result"; seq: number; ok: boolean };
+
+const socketPath = socketPathFor(userDataDir, "mcp-shuttle"); // its own pipe, not the pty-host's
+net.createServer((sock) => {
+  const decoder = new FrameDecoder<Msg>();
+  sock.on("data", (chunk) => {
+    for (const msg of decoder.push(chunk)) sock.write(encodeFrame<Msg>({ kind: "result", seq: msg.seq, ok: true }));
+  });
+}).listen(socketPath);
+writePidfile(userDataDir, { pid: process.pid, socketPath, protocolVersion: 1, startedAt: Date.now() }, "mcp-shuttle");
+```
+
+Give each host its own name. Without one, every helper means the pty-host, and
+its addresses are unchanged. Pass your own protocol version to
+`pidfileUsable(pf, version)`, or your pidfiles are judged against the
+pty-host's.
+
 ## cwd tracking (OSC-7)
 
 The host learns each terminal's working directory from **OSC-7** escape

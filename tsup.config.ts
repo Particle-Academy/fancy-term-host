@@ -12,6 +12,10 @@ export default defineConfig({
     // Electron-builder packaging helpers (afterPack node-pty fix-ups). A subpath
     // so non-desktop consumers never pull in the packaging code.
     electron: "src/electron/index.ts",
+    // The IPC transport with no native dependency (#12): the framing codec and
+    // the per-user pipe/pidfile helpers, for a second host that ships without
+    // node-pty. Nothing it reaches may import node-pty or electron.
+    ipc: "src/ipc/index.ts",
   },
   format: ["esm", "cjs"],
   dts: true,

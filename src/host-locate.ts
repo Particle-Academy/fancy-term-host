@@ -26,40 +26,64 @@ export function userHash(): string {
     return crypto.createHash('sha1').update(seed).digest('hex').slice(0, 12);
 }
 
+/** The host every helper here means when no name is passed: the pty-host. */
+export const DEFAULT_HOST_NAME = 'ptyhost';
+
 /**
- * The local IPC transport address.
- *   • Windows: a named pipe `\\.\pipe\genie-ptyhost-<userhash>`. The default
+ * A host name becomes part of a pipe name and two file names, so it may not
+ * carry a separator, start with a dot, or be empty. Thrown rather than cleaned
+ * up: a name silently rewritten could put two hosts on one pipe.
+ */
+function hostName(name: string): string {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name)) {
+        throw new TypeError(
+            `Invalid host name ${JSON.stringify(name)}: use letters, digits, '-' and '_', starting with a letter or digit.`,
+        );
+    }
+    return name;
+}
+
+/**
+ * The local IPC transport address of the host called `name`.
+ *   • Windows: a named pipe `\\.\pipe\genie-<name>-<userhash>`. The default
  *     Windows pipe ACL is per-logon-session, so another user on the same machine
  *     can't open it — that's our ACL. (Documented; we don't tighten further.)
  *   • POSIX: a unix domain socket under userData (preferred — survives /tmp
- *     cleaners and is per-user by directory perms) named `ptyhost.sock`.
+ *     cleaners and is per-user by directory perms) named `<name>.sock`.
+ *
+ * `name` defaults to the pty-host, whose addresses it leaves exactly as they
+ * were. A second per-user host passes its own, so the two never contend for one
+ * pipe (#12).
  */
-export function socketPathFor(userDataDir: string): string {
+export function socketPathFor(userDataDir: string, name: string = DEFAULT_HOST_NAME): string {
+    const host = hostName(name);
     if (process.platform === 'win32') {
-        return `\\\\.\\pipe\\genie-ptyhost-${userHash()}`;
+        return `\\\\.\\pipe\\genie-${host}-${userHash()}`;
     }
     // Keep the path short — unix socket paths have a ~104-char limit. userData is
     // typically well under that; fall back to os.tmpdir() if it's pathologically
     // long.
-    const candidate = path.join(userDataDir, 'ptyhost.sock');
+    const candidate = path.join(userDataDir, `${host}.sock`);
     if (candidate.length < 100) return candidate;
-    return path.join(os.tmpdir(), `genie-ptyhost-${userHash()}.sock`);
+    return path.join(os.tmpdir(), `genie-${host}-${userHash()}.sock`);
 }
 
-export function pidfilePath(userDataDir: string): string {
-    return path.join(userDataDir, 'ptyhost.json');
+export function pidfilePath(userDataDir: string, name: string = DEFAULT_HOST_NAME): string {
+    return path.join(userDataDir, `${hostName(name)}.json`);
 }
 
-export function writePidfile(userDataDir: string, pf: Pidfile): void {
-    const target = pidfilePath(userDataDir);
+export function writePidfile(userDataDir: string, pf: Pidfile, name: string = DEFAULT_HOST_NAME): void {
+    const target = pidfilePath(userDataDir, name);
     const tmp = `${target}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(pf));
     fs.renameSync(tmp, target);
 }
 
-export function readPidfile(userDataDir: string): Pidfile | null {
+export function readPidfile(userDataDir: string, name: string = DEFAULT_HOST_NAME): Pidfile | null {
+    // Resolved OUTSIDE the try: an invalid name must throw, not read as "no host".
+    const target = pidfilePath(userDataDir, name);
     try {
-        const raw = fs.readFileSync(pidfilePath(userDataDir), 'utf8');
+        const raw = fs.readFileSync(target, 'utf8');
         const pf = JSON.parse(raw) as Pidfile;
         if (
             typeof pf.pid !== 'number' ||
@@ -74,9 +98,10 @@ export function readPidfile(userDataDir: string): Pidfile | null {
     }
 }
 
-export function deletePidfile(userDataDir: string): void {
+export function deletePidfile(userDataDir: string, name: string = DEFAULT_HOST_NAME): void {
+    const target = pidfilePath(userDataDir, name);
     try {
-        fs.rmSync(pidfilePath(userDataDir), { force: true });
+        fs.rmSync(target, { force: true });
     } catch {
         /* ignore */
     }
@@ -139,10 +164,14 @@ export async function awaitPidGone(pid: number, timeoutMs = 2000): Promise<boole
  * Decide whether an existing pidfile points at a usable host.
  * Usable = pid alive AND protocol versions match. A stale/dead/mismatched
  * pidfile means we must spawn a fresh host.
+ *
+ * `protocolVersion` is the version the READER speaks, and defaults to the
+ * pty-host's. A second host passes its own: judged against the pty-host
+ * protocol, every one of its pidfiles would read as stale.
  */
-export function pidfileUsable(pf: Pidfile | null): boolean {
+export function pidfileUsable(pf: Pidfile | null, protocolVersion: number = PROTOCOL_VERSION): boolean {
     if (!pf) return false;
-    if (pf.protocolVersion !== PROTOCOL_VERSION) return false;
+    if (pf.protocolVersion !== protocolVersion) return false;
     if (!isPidAlive(pf.pid)) return false;
     return true;
 }
