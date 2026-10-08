@@ -31,6 +31,67 @@ upgrading.
   carried with no note of why, and had drifted back inside the vulnerable range
   before anyone looked.
 
+## [0.7.0] — 2026-10-07
+
+### Fixed
+
+- **A create for a pty id can no longer overlap a dispose of the same id** (#13).
+  `kill` did this:
+
+  ```ts
+  e.pty.kill();        // native teardown STARTS
+  ptys.delete(msg.id); // the id is free again IMMEDIATELY
+  ```
+
+  On Windows `kill()` signals the process and returns; closing the pseudoconsole
+  and joining ConPTY's agent threads finish afterwards, and `onExit` is what says
+  they did. Deleting the entry in the same tick therefore freed the id **while the
+  old pseudoconsole was still being destroyed**, so a `create` arriving in that
+  window spawned a SECOND native pseudoconsole against an id whose first one was
+  mid-destruction.
+
+  The host that died with `0xC0000005` — taking all 22 terminals on the machine
+  with it — had been taking ~2,678 spawn requests across **three distinct ids**,
+  one create about every 1.8 seconds for over an hour: exactly the cadence that
+  lands creates inside teardown windows.
+
+  **This is not a claim to have found that crash's cause.** The reporter retracted
+  the reused-id theory after a second pty-host racing the first was fixed in the
+  surrounding app, and that explains the fault at least as well. The rule stands on
+  its own regardless: a create must not overlap a dispose of the same id, and a
+  lost race deserves an error rather than a native fault that takes every terminal
+  with it.
+
+  The lifecycle moved into `PtyRegistry`, which holds an id's slot until `onExit`
+  confirms teardown — bounded by a watchdog, because a dispose that never reports
+  completion would otherwise strand the id forever. A terminal that fails to start
+  is recoverable; a host that stops answering for one id is not. A disposing pty
+  reads as absent from `get`/`list`/the idle count, so nothing writes to a pty
+  whose handles are closing.
+
+  **What a consumer must DO: nothing.** Attaching to a live terminal is unchanged
+  (still returns the existing pty with its scrollback), and the only behaviour
+  that moved is a create against an id that is *still being killed*, which
+  previously produced undefined native behaviour.
+
+### Added
+
+- **The host asks for a diagnostic report if it dies of a fatal error** (#13).
+  When it crashed, the only evidence was an exit code in another process's log —
+  Windows Error Reporting produced nothing usable and there were no Crashpad
+  reports, so a fault that killed every terminal on the machine was undiagnosable
+  afterwards. `process.report.reportOnFatalError` is now on, with reports under
+  `<userData>/pty-host/reports`.
+
+  `reportOnFatalError` is the one knob that covers a NATIVE fault. A JS
+  `try/catch` cannot: an access violation is not an exception, which is why
+  wrapping the `spawn` call — the report's first suggestion — would not have
+  contained this. Set at runtime rather than as an argv flag because the detached
+  host is launched by the embedding app through the `spawnDetached` port, so this
+  package does not control its own command line. Best-effort: a host that will not
+  start because it could not arrange its own crash reporting is worse than one
+  that starts without it.
+
 ## [0.6.0] — 2026-09-14
 
 ### Added

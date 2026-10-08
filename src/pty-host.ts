@@ -35,6 +35,7 @@ import {
 } from './host-protocol';
 import { socketPathFor, pidfilePath } from './host-locate';
 import { resolveSpawnCwd } from './cwd';
+import { PtyRegistry } from './pty-registry';
 
 const SCROLLBACK_MAX = 1_000_000;
 /** Self-exit after this long with no ptys AND no connected client. */
@@ -47,13 +48,46 @@ if (!userData) {
     process.exit(2);
 }
 
+enableCrashReports(userData);
+
+/**
+ * Write a diagnostic report if this process dies of a FATAL error (#13).
+ *
+ * This host died once with `0xC0000005` — a native access violation in the pty
+ * layer — taking all 22 terminals on the machine with it, and **the only evidence
+ * was an exit code in somebody else's log.** Windows Error Reporting produced
+ * nothing usable and there were no Crashpad reports for the process, so there was
+ * no stack: a fault that killed every terminal was undiagnosable after the fact.
+ *
+ * `reportOnFatalError` is the one knob that covers a NATIVE fault. A JS
+ * `try/catch` cannot — an access violation is not an exception, which is why
+ * wrapping the `spawn` call would not have contained the crash this answers.
+ *
+ * Set at runtime rather than via an argv flag because the detached host is
+ * launched by the embedding app through the `spawnDetached` port, so this package
+ * does not control its own command line.
+ *
+ * Best-effort by design: a host that will not start because it could not arrange
+ * its own crash reporting is strictly worse than one that starts without it.
+ */
+function enableCrashReports(dir: string): void {
+    try {
+        const reports = path.join(dir, 'pty-host', 'reports');
+        fs.mkdirSync(reports, { recursive: true });
+        process.report!.directory = reports;
+        process.report!.reportOnFatalError = true;
+    } catch (err) {
+        console.error('[pty-host] could not enable crash reports:', err);
+    }
+}
+
 interface HostPty {
     pty: IPty;
     shell: string;
     scrollback: string;
 }
 
-const ptys = new Map<string, HostPty>();
+const ptys = new PtyRegistry<IPty>();
 const clients = new Set<net.Socket>();
 let lastActivity = Date.now();
 /** The listening server, set once startServer binds — used by graceful shutdown. */
@@ -70,7 +104,7 @@ function broadcast(msg: HostMessage): void {
     }
 }
 
-function createPty(opts: {
+async function createPty(opts: {
     id: string;
     cwd: string;
     shell?: string;
@@ -78,16 +112,31 @@ function createPty(opts: {
     cols?: number;
     rows?: number;
     env?: Record<string, string>;
-}): { pid: number; shell: string; existing: boolean; scrollback: string } {
-    const existing = ptys.get(opts.id);
-    if (existing) {
-        return {
-            pid: existing.pty.pid,
-            shell: existing.shell,
-            existing: true,
-            scrollback: existing.scrollback,
-        };
-    }
+}): Promise<{ pid: number; shell: string; existing: boolean; scrollback: string }> {
+    // Attach-or-spawn is the registry's decision, not this function's. It returns
+    // a live pty unchanged, and for a free id calls `make` -- but NEVER while a
+    // previous pty for the same id is still being torn down (#13), which is the
+    // window a create used to slip through into a second native pseudoconsole.
+    const { entry, existing } = await ptys.create(opts.id, () => makePty(opts));
+
+    return {
+        pid: entry.pty.pid,
+        shell: entry.shell,
+        existing,
+        scrollback: existing ? entry.scrollback : '',
+    };
+}
+
+/** Spawn a pty and wire its streams. Called only for an id the registry says is free. */
+function makePty(opts: {
+    id: string;
+    cwd: string;
+    shell?: string;
+    args?: string[];
+    cols?: number;
+    rows?: number;
+    env?: Record<string, string>;
+}): HostPty {
     const shell = opts.shell ?? defaultShell();
     const env = { ...process.env, ...(opts.env ?? {}) } as Record<string, string>;
     // node-pty's `name` WINS over env.TERM (`name = opt.name || env.TERM; env.TERM
@@ -116,7 +165,6 @@ function createPty(opts: {
     });
 
     const entry: HostPty = { pty, shell, scrollback: '' };
-    ptys.set(opts.id, entry);
 
     pty.onData((data) => {
         const next = entry.scrollback + data;
@@ -125,12 +173,14 @@ function createPty(opts: {
         broadcast({ kind: 'data', id: opts.id, data });
     });
     pty.onExit(({ exitCode, signal }) => {
-        ptys.delete(opts.id);
+        // Teardown confirmed. Until this fires the id stays reserved, which is
+        // what keeps a create from overlapping a dispose (#13).
+        ptys.settle(opts.id);
         broadcast({ kind: 'exit', id: opts.id, exitCode, signal });
         lastActivity = Date.now();
     });
 
-    return { pid: pty.pid, shell, existing: false, scrollback: '' };
+    return entry;
 }
 
 function defaultShell(): string {
@@ -138,7 +188,7 @@ function defaultShell(): string {
     return process.env.SHELL ?? '/bin/bash';
 }
 
-function handleClientMessage(sock: net.Socket, msg: ClientMessage): void {
+async function handleClientMessage(sock: net.Socket, msg: ClientMessage): Promise<void> {
     lastActivity = Date.now();
     switch (msg.kind) {
         case 'hello':
@@ -150,7 +200,7 @@ function handleClientMessage(sock: net.Socket, msg: ClientMessage): void {
             });
             break;
         case 'create': {
-            const r = createPty(msg.opts);
+            const r = await createPty(msg.opts);
             reply(sock, {
                 kind: 'created',
                 seq: msg.seq,
@@ -181,22 +231,16 @@ function handleClientMessage(sock: net.Socket, msg: ClientMessage): void {
             break;
         }
         case 'kill': {
-            const e = ptys.get(msg.id);
-            if (e) {
-                try {
-                    e.pty.kill();
-                } catch {
-                    /* already exited */
-                }
-                ptys.delete(msg.id);
-            }
+            // Marks the id disposing and kills; the slot is released by onExit
+            // (or a bounded watchdog), never synchronously. See PtyRegistry.
+            ptys.dispose(msg.id);
             break;
         }
         case 'list':
             reply(sock, {
                 kind: 'list-result',
                 seq: msg.seq,
-                terminals: Array.from(ptys.entries()).map(([id, e]) => ({
+                terminals: ptys.entries().map(([id, e]) => ({
                     id,
                     pid: e.pty.pid,
                     shell: e.shell,
@@ -269,7 +313,14 @@ function startServer(socketPath: string): void {
                 }
                 return;
             }
-            for (const f of frames) handleClientMessage(sock, f as ClientMessage);
+            // Awaited in order: `create` is async now (it may wait for a
+            // dispose of the same id), and running frames concurrently would let
+            // a later write reach a pty its create had not finished making.
+            for (const f of frames) {
+                void handleClientMessage(sock, f as ClientMessage).catch((err: unknown) => {
+                    console.error('[pty-host] client message failed:', err);
+                });
+            }
         });
         const drop = () => {
             clients.delete(sock);
@@ -299,7 +350,7 @@ function startServer(socketPath: string): void {
 
     // Idle watchdog: exit when nothing is running and nobody is connected.
     const idle = setInterval(() => {
-        if (ptys.size === 0 && clients.size === 0 && Date.now() - lastActivity > IDLE_TIMEOUT_MS) {
+        if (ptys.size() === 0 && clients.size === 0 && Date.now() - lastActivity > IDLE_TIMEOUT_MS) {
             cleanupAndExit(socketPath, server);
         }
     }, IDLE_CHECK_MS);
@@ -353,14 +404,9 @@ function cleanupAndExit(socketPath: string, server: net.Server): void {
  * tearing down the host here loses nothing.
  */
 function shutdown(): void {
-    for (const [, e] of ptys) {
-        try {
-            e.pty.kill();
-        } catch {
-            /* already exited */
-        }
+    for (const [id] of ptys.entries()) {
+        ptys.dispose(id);
     }
-    ptys.clear();
     if (activeServer) {
         cleanupAndExit(socketPath, activeServer);
     } else {
