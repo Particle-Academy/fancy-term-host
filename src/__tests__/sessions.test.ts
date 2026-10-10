@@ -21,11 +21,38 @@ import type { Encryptor } from '../ports';
 
 let tmpDir: string;
 
-/** Identity-cipher Encryptor: encrypt/decrypt are passthroughs. */
-const identityEncryptor: Encryptor = {
+/**
+ * An Encryptor that genuinely TRANSFORMS bytes, so the encrypted branch is a
+ * real round-trip rather than a passthrough.
+ *
+ * This was an identity cipher until 2026-10-10 (`encrypt: (b) => b`). That
+ * proved the encrypt/decrypt branch was REACHED and could not prove it was
+ * REVERSIBLE: with both halves no-ops, an implementation that forgot to
+ * decrypt, or decrypted in the wrong place, read back perfectly. The test was
+ * weaker than it read — the same shape as a check whose own prose can fail it.
+ * `claude · genie2` hit it in their live check and named it.
+ *
+ * Deliberately NOT a bare XOR. XOR with a fixed key is an INVOLUTION, so
+ * `encrypt(encrypt(x)) === x` and calling `encrypt` on the read path instead of
+ * `decrypt` would still round-trip — a passthrough's weakness wearing a
+ * cipher's clothes. This prepends a marker as well, so the transform is
+ * directional: `decrypt` throws unless the marker is there, which makes
+ * "encrypted twice" and "never decrypted" both detectable.
+ */
+const XOR_KEY = 0x5a;
+const MARKER = Buffer.from('ENC1');
+
+const xorBytes = (b: Buffer): Buffer => Buffer.from(b.map((byte) => byte ^ XOR_KEY));
+
+const transformingEncryptor: Encryptor = {
     isAvailable: () => true,
-    encrypt: (b) => b,
-    decrypt: (b) => b,
+    encrypt: (b) => Buffer.concat([MARKER, xorBytes(b)]),
+    decrypt: (b) => {
+        if (!b.subarray(0, MARKER.length).equals(MARKER)) {
+            throw new Error('decrypt called on bytes this cipher did not encrypt');
+        }
+        return xorBytes(b.subarray(MARKER.length));
+    },
 };
 
 /** Encryptor that reports the OS can't encrypt → plaintext-magic fallback. */
@@ -51,6 +78,28 @@ afterEach(() => {
     }
 });
 
+describe('the test cipher is a real transform, not a passthrough', () => {
+    // Guards the GUARD. Every encrypted-branch assertion below is only as strong
+    // as this double, and the cheapest way to weaken them all is to quietly
+    // simplify it back to `(b) => b`.
+    const plain = Buffer.from('scrollback');
+
+    it('changes the bytes', () => {
+        expect(transformingEncryptor.encrypt(plain).equals(plain)).toBe(false);
+    });
+
+    it('is reversible', () => {
+        expect(transformingEncryptor.decrypt(transformingEncryptor.encrypt(plain)).equals(plain)).toBe(true);
+    });
+
+    it('is DIRECTIONAL, so encrypting twice is not the same as a round-trip', () => {
+        // The property a bare XOR would not have, and the reason it was rejected.
+        const once = transformingEncryptor.encrypt(plain);
+        expect(transformingEncryptor.encrypt(once).equals(once)).toBe(false);
+        expect(() => transformingEncryptor.decrypt(plain)).toThrow();
+    });
+});
+
 describe('sessions snapshot round-trip', () => {
     it('writes then reads back the same serialized text (plaintext fallback)', () => {
         const store = storeWith(unavailableEncryptor);
@@ -68,7 +117,7 @@ describe('sessions snapshot round-trip', () => {
         // Encryption "available" + an identity cipher: encrypt returns the
         // bytes, decrypt returns them back. Proves the encrypt/decrypt branch is
         // reached and reversible.
-        const store = storeWith(identityEncryptor);
+        const store = storeWith(transformingEncryptor);
         const text = 'encrypted buffer — OK';
         store.writeSnapshot('term-enc', text);
         const read = store.readSnapshot('term-enc');
@@ -76,7 +125,7 @@ describe('sessions snapshot round-trip', () => {
     });
 
     it('marks the encrypted file with the encrypted magic byte (0x01)', () => {
-        const store = storeWith(identityEncryptor);
+        const store = storeWith(transformingEncryptor);
         store.writeSnapshot('term-magic', 'x');
         const file = path.join(tmpDir, 'sessions', 'term-magic.snap');
         const raw = fs.readFileSync(file);
@@ -179,7 +228,7 @@ describe('sessions snapshot round-trip', () => {
  */
 describe('the encryption posture is readable through the API', () => {
     it('reports what a write would do, without writing anything', () => {
-        expect(storeWith(identityEncryptor).encrypting()).toBe(true);
+        expect(storeWith(transformingEncryptor).encrypting()).toBe(true);
         expect(storeWith(unavailableEncryptor).encrypting()).toBe(false);
 
         // No file may be needed to answer it — this is the startup assertion,
@@ -201,8 +250,8 @@ describe('the encryption posture is readable through the API', () => {
     });
 
     it('reports how the file on disk was ACTUALLY stored', () => {
-        storeWith(identityEncryptor).writeSnapshot('enc', 'secret output');
-        expect(storeWith(identityEncryptor).readSnapshot('enc')!.encrypted).toBe(true);
+        storeWith(transformingEncryptor).writeSnapshot('enc', 'secret output');
+        expect(storeWith(transformingEncryptor).readSnapshot('enc')!.encrypted).toBe(true);
 
         storeWith(unavailableEncryptor).writeSnapshot('plain', 'secret output');
         expect(storeWith(unavailableEncryptor).readSnapshot('plain')!.encrypted).toBe(false);
@@ -211,13 +260,13 @@ describe('the encryption posture is readable through the API', () => {
     it('agrees with the magic byte, which is what consumers were reading instead', () => {
         // Pins the mapping to the on-disk format rather than to itself. If these
         // ever disagree, the accessor is lying and the byte is the truth.
-        storeWith(identityEncryptor).writeSnapshot('enc', 'x');
+        storeWith(transformingEncryptor).writeSnapshot('enc', 'x');
         storeWith(unavailableEncryptor).writeSnapshot('plain', 'x');
 
         const byte0 = (id: string) => fs.readFileSync(path.join(tmpDir, 'sessions', `${id}.snap`))[0];
         expect(byte0('enc')).toBe(0x01);
         expect(byte0('plain')).toBe(0x00);
-        expect(storeWith(identityEncryptor).readSnapshot('enc')!.encrypted).toBe(true);
+        expect(storeWith(transformingEncryptor).readSnapshot('enc')!.encrypted).toBe(true);
         expect(storeWith(unavailableEncryptor).readSnapshot('plain')!.encrypted).toBe(false);
     });
 
@@ -228,7 +277,7 @@ describe('the encryption posture is readable through the API', () => {
         // both to know it has plaintext on disk to migrate.
         storeWith(unavailableEncryptor).writeSnapshot('legacy', 'written before safeStorage was wired');
 
-        const nowEncrypting = storeWith(identityEncryptor);
+        const nowEncrypting = storeWith(transformingEncryptor);
         expect(nowEncrypting.encrypting()).toBe(true);
         expect(nowEncrypting.readSnapshot('legacy')!.encrypted).toBe(false);
         expect(nowEncrypting.readSnapshot('legacy')!.serialized).toBe('written before safeStorage was wired');
