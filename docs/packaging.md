@@ -53,10 +53,34 @@ afterPack: async (context) => {
 },
 ```
 
-`action` is one of `fixed` · `already-present` · `skipped` · `failed`. When it
-can't find node-pty under the packed app, it returns `{ action: 'skipped', ok:
-false }` — check your `asarUnpack` glob, or pass an explicit dir:
-`fancyTermAfterPack(context, { nodePtyDir })`.
+**Branch on `ok`, never on `action`.** `ok` is the only field that answers "will
+a terminal spawn in this build", and the example above is the whole gate you
+need.
+
+`action` is one of `fixed` · `already-present` · `skipped` · `failed`, and it is
+for the LOG, not for control flow — because **`skipped` has two meanings**:
+
+| situation | result |
+|---|---|
+| nothing to fix on this platform — e.g. Linux has no `spawn-helper`, since node-pty builds it only on macOS | `{ action: 'skipped', ok: true }` |
+| **node-pty not found under the packed app** | `{ action: 'skipped', ok: false }` |
+
+So a CI gate keyed on the string cannot be right in either direction: strict
+enough to catch the second case and it fails every legitimate Linux build; loose
+enough to pass Linux and the second case sails through. **An earlier version of
+this page described only the `ok: false` meaning**, and a consumer reasonably
+read that as "skipped means not found" and wrote their gate accordingly — it was
+correct only because they had also copied the `!ok` check from the example.
+
+On `{ action: 'skipped', ok: false }`: check your `asarUnpack` glob, or pass an
+explicit dir — `fancyTermAfterPack(context, { nodePtyDir })`. And note that
+`node-pty` must be reachable to electron-builder's module collector at all,
+which means `dependencies` or `optionalDependencies` — **a `peerDependency` is
+never packed** (that was this package's own bug through 0.8.0; see the changelog
+for 0.9.0).
+
+A future minor will split the benign case out as a distinct `not-found` action so
+the log line is self-describing; `ok` will keep working unchanged.
 
 ### Windows arch selection
 
