@@ -1,11 +1,13 @@
 # Packaging node-pty for a desktop app (Electron)
 
-`fancy-term-host` owns the PTYs through **`node-pty`**, a native addon you build
-yourself (it's a peer dependency). Bundling a native addon into a packaged
-Electron app is where terminals silently break: `electron-builder`'s
-`install-app-deps` rebuilds `node-pty`, but the rebuild output is left unusable
-**per-OS**, so a standard packaged build spawns **no terminal at all** until you
-patch it. This page is the patch — and `fancy-term-host` ships it for you.
+`fancy-term-host` owns the PTYs through **`node-pty`**, a native addon. It is
+declared here as an **`optionalDependency`** — not a peer, which is the one shape
+`electron-builder` never packs (that was this package's own bug through 0.8.0;
+see `{ action: 'skipped', ok: false }` below). Bundling
+a native addon into a packaged Electron app is then where terminals silently
+break: the assets node-pty loads at runtime are left incomplete **per-OS**, so a
+standard packaged build spawns **no terminal at all** until you patch it. This
+page is the patch — and `fancy-term-host` ships it for you.
 
 ## The three breakages
 
@@ -28,6 +30,9 @@ module.exports = {
   // node-pty is native — keep it OUT of the asar so its .node + helpers load,
   // and so the afterPack hook can find + fix them.
   asarUnpack: ['**/node_modules/node-pty/**'],
+  // node-pty 1.x is a Node-API addon shipping prebuilds: the default rebuild is
+  // pointless AND needs Python + MSVC. See "Turn the rebuild OFF" below.
+  npmRebuild: false,
   afterPack: (context) => fancyTermAfterPack(context),
 };
 ```
@@ -38,6 +43,7 @@ ESM:
 import { fancyTermAfterPack } from '@particle-academy/fancy-term-host/electron';
 export default {
   asarUnpack: ['**/node_modules/node-pty/**'],
+  npmRebuild: false,
   afterPack: (context) => fancyTermAfterPack(context),
 };
 ```
@@ -96,6 +102,31 @@ fancyTermAfterPack(context, { arch: 'x64' });          // force the arch name
 fancyTermAfterPack(context, { conptySource: '/abs/dir' }); // pin the source dir
 ```
 
+**`already-present` bypasses that selection, so CROSS-ARCH builds must pass
+`arch` explicitly.** node-pty's own `postinstall` already copies a `conpty.dll`
+into `build/Release/conpty/`, and it picks the arch from `npm_config_arch` or
+`os.arch()` — **the build HOST's**, which the hook has no way to re-derive once
+the files are sitting there. Finding them present is the whole basis for
+`already-present`, so packing an **arm64** app on an **x64** Windows host yields
+`{ action: 'already-present', ok: true }` over an x64 dll, and the installer is
+green with a terminal that cannot start. Same-arch builds (the common case) are
+unaffected.
+
+Note that **`arch` and `conptySource` do not help here** — both are read only
+*after* the present-files check, so neither can override an inherited dll. If
+host arch and target arch differ, remove the directory first and let the hook
+make the copy from the target's prebuild:
+
+```js
+afterPack: async (context) => {
+  // Cross-arch only: drop the host-arch dll node-pty's postinstall left behind,
+  // so the hook selects by context.arch instead of reporting already-present.
+  if (context.arch !== hostArch) rmSync(conptyDir, { recursive: true, force: true });
+  const r = await fancyTermAfterPack(context);
+  if (!r.ok) throw new Error(`node-pty packaging fix failed: ${r.detail}`);
+},
+```
+
 ### macOS signing note
 
 The hook **ad-hoc** signs `spawn-helper` (`codesign --force --sign -`) so it runs
@@ -124,12 +155,56 @@ codesign --force --sign - build/Release/spawn-helper
 chmod +x build/Release/spawn-helper
 ```
 
-## Electron ABI note
+## Turn the rebuild OFF — `npmRebuild: false`
 
-`node-pty` is a native addon: it must be built against the **same ABI** as the
-runtime that loads it. Run `electron-builder install-app-deps` (or
-`electron-rebuild`) so `node-pty` matches your Electron version, and when you run
-the **detached pty-host** on Electron-as-Node, spawn it with
-`ELECTRON_RUN_AS_NODE=1` so the ABI still matches (see the README). For the
-**T3+ per-user service**, the host runs on a *standalone* Node — give that
-runtime its own ABI-matched `node-pty` (`ServiceRuntime.nodePtyDir`).
+**`node-pty` 1.x does not need an Electron rebuild, and attempting one is how
+packaging fails on a machine that is not a CI runner.** Set:
+
+```js
+module.exports = {
+  npmRebuild: false,
+  asarUnpack: ['**/node_modules/node-pty/**'],
+  afterPack: (context) => fancyTermAfterPack(context),
+};
+```
+
+Two separate reasons, and the first is why the second is safe to skip:
+
+- **It is a Node-API addon, so its ABI does not move with the runtime.**
+  `node-pty@1.1.0` depends on `node-addon-api` and builds against Node-API,
+  which is ABI-stable across Node *and* Electron versions. It also ships
+  prebuilt binaries — `prebuilds/{darwin-arm64,darwin-x64,win32-arm64,win32-x64}/`
+  — and `lib/utils.js` loads `build/Release` → `build/Debug` →
+  `prebuilds/<platform>-<arch>`, so with no `build/Release/*.node` present the
+  shipped prebuild is what loads. Rebuilding produces a binary that is not
+  more compatible than the one already in the tarball.
+- **electron-builder's default `@electron/rebuild` pass rebuilds it from source
+  with node-gyp, which needs Python + MSVC.** GitHub's Windows runners have
+  both; a clean Windows does not, and the build dies with `Could not find any
+  Python installation to use`. Measured by `claude · tynn` on a Windows test VM.
+
+With `npmRebuild: false` the hook reports `{ action: 'already-present', ok: true }`
+rather than `fixed`, because node-pty's own `postinstall` has already put
+`conpty.dll` + `OpenConsole.exe` in `build/Release/conpty/`. Both are `ok` — this
+is exactly why you branch on `ok` and not on `action`.
+
+**Linux has no prebuild**, so there `npm install` itself runs `node-gyp rebuild`
+(node-pty's `install` script is `node scripts/prebuild.js || node-gyp rebuild`).
+A Linux build host therefore still needs a C++ toolchain at *install* time —
+`npmRebuild: false` only removes the *packaging*-time rebuild.
+
+### Clean Windows machines have no VC++ runtime
+
+A fresh Windows 11 ships without the Visual C++ redistributable, and **every**
+`.node` addon then fails to load — reported as `Cannot find native binding`,
+which reads like a missing file rather than a missing runtime. Install
+`vc_redist.x64` on any bare Windows machine you build or test on. (Also measured
+on a clean VM by `claude · tynn`; their test-VM provisioning now includes it.)
+
+### Where the ABI still matters
+
+When you run the **detached pty-host** on Electron-as-Node, spawn it with
+`ELECTRON_RUN_AS_NODE=1` (see the README). For the **T3+ per-user service** the
+host runs on a *standalone* Node — give that runtime its own `node-pty`
+(`ServiceRuntime.nodePtyDir`). Node-API keeps these compatible across versions;
+what must still line up is platform and arch.

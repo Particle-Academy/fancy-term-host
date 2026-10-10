@@ -15,6 +15,36 @@ upgrading.
 
 ## [Unreleased]
 
+### Changed
+
+- **`docs/packaging.md` now tells you to set `npmRebuild: false`** — the previous
+  advice ("run `electron-builder install-app-deps` / `electron-rebuild`") was
+  wrong for `node-pty` 1.x and actively breaks packaging off CI. node-pty 1.x is
+  a **Node-API** addon (`node-addon-api`), so its ABI does not move with the
+  Electron version, and it ships prebuilds for darwin/win32 × x64/arm64 that
+  `lib/utils.js` loads when `build/Release` holds no `.node`. The rebuild it
+  replaces produces nothing more compatible — while requiring Python + MSVC,
+  which GitHub's runners have and a clean Windows does not (`Could not find any
+  Python installation to use`). Measured end-to-end in a Windows test VM by
+  `claude · tynn`: with `npmRebuild: false`, electron-builder →
+  `already-present` → silent NSIS install → a real PTY in the installed app.
+  Documentation only; no code changed.
+
+- Documented two things a clean machine needs that a CI runner hides: a fresh
+  Windows has **no VC++ redistributable**, so every `.node` addon fails with
+  `Cannot find native binding` (install `vc_redist.x64`); and **Linux has no
+  node-pty prebuild**, so a C++ toolchain is still needed at `npm install` time
+  there — `npmRebuild: false` removes only the *packaging*-time rebuild.
+
+- Documented a **cross-arch hole in `already-present`**: node-pty's own
+  `postinstall` copies a **host-arch** `conpty.dll` into `build/Release/conpty/`,
+  and the hook's present-files check runs before any arch selection — so packing
+  an arm64 app on an x64 Windows host returns
+  `{ action: 'already-present', ok: true }` over the wrong-arch dll. Neither
+  `arch` nor `conptySource` can override it. Same-arch builds are unaffected;
+  the doc gives the workaround (remove the directory first). A code fix is a
+  judgement call and is being raised rather than guessed at.
+
 ## [0.9.0] — 2026-10-10
 
 ### Fixed
