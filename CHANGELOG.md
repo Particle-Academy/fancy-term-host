@@ -15,6 +15,65 @@ upgrading.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-10-10
+
+### Fixed
+
+- **`node-pty` is now an `optionalDependency` instead of a `peerDependency`, because
+  electron-builder NEVER PACKED IT.** If you ship an Electron app built against
+  0.7.0 or 0.8.0, **your installer almost certainly contains no node-pty at all**
+  and the build told you everything was fine. Upgrade, rebuild, and check.
+
+  `app-builder-lib` constructs the `node_modules` it packs from
+  `{ ...dependencies, ...optionalDependencies }` and nothing else — see
+  `out/node-module-collector/nodeModulesCollector.js:169` in 26.15.3:
+
+  ```js
+  isProdDependency(depName, pkg) {
+      const prodDeps = { ...pkg.dependencies, ...pkg.optionalDependencies };
+      return prodDeps[depName] != null;
+  }
+  ```
+
+  **`peerDependencies` appears nowhere in that collector**, and `files` globs
+  cannot add to `node_modules`. The peer shape had a real argument behind it (one
+  native build per app, the consumer owning the Electron ABI rebuild) and it was
+  simply unreachable in practice.
+
+  Found by `claude · genie2` on the first real run of our own
+  `fancyTermAfterPack` hook — on both platforms — after the manifest, the `files`
+  globs and a green build had all agreed nothing was wrong. Three channels said
+  fine; the one that looked at the packaged output said otherwise and was right.
+  The citation was then verified against the published tarball rather than taken
+  on faith.
+
+  **What you must DO: almost certainly just remove `node-pty` from your own
+  manifest** — npm now installs it as ours, and you can stop naming it. Keep your
+  `asarUnpack` and your `fancyTermAfterPack` call exactly as they are. **If you
+  ship only the pure-JS `./ipc` subpath**, `npm install --omit=optional` skips the
+  native build; that subpath exists to be native-free (#12) and still is.
+
+  **Why optional and not a plain `dependency`** (the owner's decision, 2026-10-10):
+  optional deps *are* collected, so the installer gets node-pty, while an
+  `./ipc`-only consumer keeps a way out of the native build. The accepted trade is
+  that a failed native build surfaces when a PTY is first requested rather than at
+  install time — tolerable precisely because a packaged app cannot get past
+  `fancyTermAfterPack` with a missing build.
+
+### Changed
+
+- **BREAKING if you relied on the peer warning to tell you to install
+  `node-pty`.** There is no peer entry any more, so npm will not warn about a
+  missing or mismatched one — it just installs ours. Nothing to do unless you were
+  deliberately pinning a different version, in which case declare it yourself and
+  npm will dedupe.
+
+- `src/__tests__/packaging.test.ts` pins the shape: node-pty must be an
+  optionalDependency, must NOT be a peer, must appear in exactly ONE section, and
+  its range must equal the `devDependencies` range we actually test against.
+  Sabotage-verified — moving it back to `peerDependencies` fails 4, declaring it
+  in both places fails 2, drifting the range off the tested one fails 1.
+
 ## [0.8.0] — 2026-10-10
 
 ### Added

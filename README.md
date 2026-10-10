@@ -9,8 +9,9 @@ deliberately **never spawns a shell**. `fancy-term-host` is the other half: the
 Node process that **owns the PTYs** (via `node-pty`) and a **T1/T2/T3 persistence
 engine** — snapshot+replay, retained PTYs, and a detached pty-host — behind four
 small **injected ports**. It runs anywhere Node runs (Electron main, a Laravel
-queue worker, a plain server): OS-agnostic by construction, with **zero hard
-third-party dependencies** (`node-pty` is a peer the consumer builds).
+queue worker, a plain server): OS-agnostic by construction, with exactly one
+third-party dependency — `node-pty`, declared **optional** so a pure-JS consumer
+can skip its native build.
 
 It can't live inside `fancy-term` or the other UI packages — `node-pty` is a
 native addon that would break their browser builds — so it's an independent
@@ -19,11 +20,31 @@ sibling you install alongside.
 ## Install
 
 ```bash
-npm install @particle-academy/fancy-term-host node-pty
+npm install @particle-academy/fancy-term-host
 ```
 
-`node-pty` is a **peer dependency**: you own its native build (and, under
-Electron, the `asar-unpack` so its `.node` binary loads outside the archive).
+**`node-pty` comes with it** — it is an `optionalDependency` as of 0.9.0, so npm
+installs it for you and you no longer name it yourself. Under Electron you still
+own the `asar-unpack` so its `.node` binary loads outside the archive; see below.
+
+**Why optional rather than a peer, or a plain dependency** — it is the one
+packaging decision in here that is not obvious, and getting it wrong ships
+broken installers that build green:
+
+- **A peer is invisible to electron-builder.** Through 0.8.0 `node-pty` was a
+  peer, and `app-builder-lib` builds the `node_modules` it packs from
+  `{ ...dependencies, ...optionalDependencies }` only
+  (`out/node-module-collector/nodeModulesCollector.js:169`) — `peerDependencies`
+  appears nowhere in that collector, and `files` globs cannot add to
+  `node_modules`. So a packaged app shipped with **no node-pty at all** and the
+  build reported success.
+- **Optional, not plain, because `./ipc` exists to be native-free.** That subpath
+  is there so a process can ship with no native addon at all; `optionalDependencies`
+  is still collected by electron-builder, while a consumer of only `./ipc` can
+  skip the build with `npm install --omit=optional`.
+- **The trade:** if the native build fails, you find out when a PTY is first
+  requested rather than at install. Acceptable because a packaged app cannot get
+  past `fancyTermAfterPack` with a missing build — it fails the pack.
 
 ### Packaging into an Electron app
 
