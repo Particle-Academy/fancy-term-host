@@ -88,6 +88,7 @@ configureInProcessBackend({
         readSnapshot: () => null,
         writeSnapshot: () => 1,
         deleteSnapshot: () => undefined,
+        encrypting: () => false,
     },
 });
 

@@ -15,6 +15,62 @@ upgrading.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-10-10
+
+### Added
+
+- **The encryption posture of snapshots is now readable through the API** —
+  `SnapshotStore.encrypting(): boolean` and `SnapshotRead.encrypted: boolean`.
+
+  ```ts
+  const snapshots = createSnapshotStore({ baseDir, encryptor });
+
+  // Assert at startup. Fails loudly the day safeStorage stops being wired.
+  if (!snapshots.encrypting()) throw new Error("terminal snapshots would be plaintext");
+
+  // And how a file on disk was ACTUALLY stored:
+  snapshots.readSnapshot(id)?.encrypted;
+  ```
+
+  **The two answer different questions and can disagree**, which is the point:
+  a snapshot written before encryption was wired reads back
+  `encrypted: false` in a process where `encrypting()` is `true`. You need both
+  to tell "we are safe now" from "we still have plaintext on disk to clean up".
+
+  **Why this exists.** A consumer shipped plaintext snapshots because its
+  `Encryptor` reported unavailable — not for the reason the fallback exists (the
+  OS genuinely cannot encrypt) but because the module was loading outside
+  Electron for a live check. **A development condition wearing the fallback's
+  clothes**, in a buffer where people type passwords and paste tokens. It was
+  undetectable from outside: the only signal was a `console.warn` fired ONCE per
+  process, and the only reliable check was reading this module's magic byte —
+  coupling a consumer to our file format to answer a question about their own
+  security posture. Reported by `claude · genie2`, who asked for exactly this
+  rather than taking the coupling.
+
+- `encrypting()` **never throws.** A throwing `Encryptor` reads as `false`,
+  because an assertion that can crash at startup is worse than the thing it
+  guards against.
+
+### Changed
+
+- **BREAKING for anyone who IMPLEMENTS `SnapshotStore` themselves** — the
+  interface gained a required `encrypting()` method, so a hand-rolled store no
+  longer satisfies the type. **If you use `createSnapshotStore` (the documented
+  path) there is nothing to do**; the factory supplies it.
+
+  To fix a custom store, return whether a write would encrypt — or `() => false`
+  if it does not persist, which is what this package's own inert default store
+  now says. Adding it caught five implementations in this repo, which is the
+  measure of how breaking it actually is: real, and a one-line fix each.
+
+  The deliberate non-change: **no fail-closed `requireEncryption` option.** The
+  documented trade is that a non-functional resume is worse than a plaintext
+  scrollback on disk, and reversing that in a package default would be wrong.
+  These two accessors are what let a consumer impose a stricter policy on
+  themselves without this package choosing it for everyone — which is where that
+  decision belongs. `claude · genie2` independently reached the same conclusion.
+
 ### Fixed
 
 - **`CHANGELOG.md` is now in the published tarball.** `files` did not whitelist it, so npm never shipped it — and this package puts breaking changes in MINOR releases and tells you in the README to read the entry before taking one. The instruction existed for the author, who has the file, and not for the consumer, who is the only one being instructed. Nothing for you to do; the file simply arrives from this release on.

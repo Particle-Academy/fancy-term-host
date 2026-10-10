@@ -52,6 +52,7 @@ const noSnapshots: SnapshotStore = {
     readSnapshot: () => null,
     writeSnapshot: () => 1,
     deleteSnapshot: () => undefined,
+        encrypting: () => false,
 };
 
 const settingsProvider: SettingsProvider = { get: (k) => settings[k] };

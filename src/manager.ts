@@ -51,6 +51,11 @@ const inertDeps: BackendDeps = {
         writeSnapshot: () => null,
         readSnapshot: () => null,
         deleteSnapshot: () => {},
+        // Persists nothing, so it is certainly not encrypting. Saying `false`
+        // here is the honest answer rather than the convenient one: a consumer
+        // asserting `encrypting()` at startup should fail against the inert
+        // store, because it is not storing their scrollback either.
+        encrypting: () => false,
     },
 };
 

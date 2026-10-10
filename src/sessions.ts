@@ -49,6 +49,15 @@ export interface SnapshotRead {
     serialized: string;
     /** Epoch ms the file was last written (from its mtime). */
     savedAt: number;
+    /**
+     * Whether the file ON DISK was encrypted (its magic byte was 0x01).
+     *
+     * This is a different question from `SnapshotStore.encrypting()`, and the
+     * two can disagree: a snapshot written before `safeStorage` was wired reads
+     * back `encrypted: false` in a process that now encrypts. A consumer needs
+     * both to tell "we are safe now" from "we have plaintext on disk to clean up".
+     */
+    encrypted: boolean;
 }
 
 /** Keep the last N bytes of a UTF-8 string without splitting a surrogate pair
@@ -80,6 +89,24 @@ export interface SnapshotStore {
     readSnapshot(id: string): SnapshotRead | null;
     /** Best-effort delete. Never throws; a missing file is success. */
     deleteSnapshot(id: string): void;
+    /**
+     * Whether a write RIGHT NOW would encrypt — i.e. the injected Encryptor
+     * reports the OS can encrypt. Needs no file and writes nothing, so it is
+     * usable as a startup assertion.
+     *
+     * Added for a real failure: a consumer shipped plaintext snapshots because
+     * its Encryptor reported unavailable for a DEVELOPMENT reason (the module
+     * was loading outside Electron) rather than the one the fallback exists for
+     * (the OS genuinely cannot encrypt). That was invisible from outside — a
+     * `console.warn` once per process — so the only reliable check was reading
+     * this module's magic byte, which couples a consumer to the file format.
+     * Assert on this instead and it fails loudly the day `safeStorage` stops
+     * being wired.
+     *
+     * Never throws: a throwing Encryptor reads as `false`, because an assertion
+     * that can crash at startup is worse than the thing it guards against.
+     */
+    encrypting(): boolean;
 }
 
 /**
@@ -162,18 +189,24 @@ export function createSnapshotStore(config: SnapshotStoreConfig): SnapshotStore 
             const body = raw.subarray(1);
 
             let gz: Buffer;
+            let encrypted: boolean;
             if (magic === MAGIC_ENCRYPTED) {
                 if (!encryptionAvailable()) return null;
                 const b64 = encryptor.decrypt(body).toString('utf8');
                 gz = Buffer.from(b64, 'base64');
+                encrypted = true;
             } else if (magic === MAGIC_PLAINTEXT) {
                 gz = body;
+                encrypted = false;
             } else {
                 return null; // unknown format
             }
 
             const serialized = zlib.gunzipSync(gz).toString('utf8');
-            return { serialized, savedAt: stat.mtimeMs };
+            // `encrypted` is read from the MAGIC BYTE, not from the current
+            // encryptor — it reports how this file was stored, which is the
+            // only question a caller cannot answer any other way.
+            return { serialized, savedAt: stat.mtimeMs, encrypted };
         } catch {
             return null;
         }
@@ -187,5 +220,5 @@ export function createSnapshotStore(config: SnapshotStoreConfig): SnapshotStore 
         }
     }
 
-    return { writeSnapshot, readSnapshot, deleteSnapshot };
+    return { writeSnapshot, readSnapshot, deleteSnapshot, encrypting: encryptionAvailable };
 }

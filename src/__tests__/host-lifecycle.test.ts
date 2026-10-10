@@ -42,6 +42,7 @@ const noSnapshots: SnapshotStore = {
     readSnapshot: () => null,
     writeSnapshot: () => 1,
     deleteSnapshot: () => undefined,
+        encrypting: () => false,
 };
 
 function ephemeralSocket(): string {

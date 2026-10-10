@@ -146,3 +146,91 @@ describe('sessions snapshot round-trip', () => {
         expect(store.writeSnapshot('term-empty', '')).toBeNull();
     });
 });
+
+/**
+ * Whether a snapshot is encrypted at rest, reported THROUGH the API.
+ *
+ * Asked for by `claude · genie2` on 2026-10-10, and the reason is the better
+ * half of the request. Genie 2 shipped its terminal engine writing plaintext
+ * snapshots because its `Encryptor` reported unavailable — not because the OS
+ * could not encrypt (the case the fallback exists for) but because the module
+ * was loading under plain Node for a live check. A DEVELOPMENT condition
+ * wearing the fallback's clothes, in a buffer where humans type passwords.
+ *
+ * It was undetectable from outside: the only signal was a `console.warn` fired
+ * ONCE per process, and the only reliable check was reading the magic byte of
+ * `<baseDir>/sessions/<id>.snap` — which means a consumer reaching past this
+ * API into the file format, coupling they correctly refused to carry.
+ *
+ * So the posture is now part of the surface:
+ *   - `encrypting()` — what a write WOULD do right now, so a consumer can
+ *     assert it at startup and fail loudly the day `safeStorage` stops being
+ *     wired, rather than discovering plaintext later.
+ *   - `SnapshotRead.encrypted` — how the file ON DISK was actually stored,
+ *     which is a different question and can disagree with the first after an
+ *     environment change.
+ *
+ * Deliberately NOT added: a fail-closed `requireEncryption`. The documented
+ * trade is that a non-functional resume is worse than a plaintext scrollback,
+ * and reversing that in a package default would be wrong. genie2 agreed, and
+ * said a fail-closed posture for Genie is a Genie-side assertion. These two
+ * accessors are what make such an assertion possible without this package
+ * choosing for everyone.
+ */
+describe('the encryption posture is readable through the API', () => {
+    it('reports what a write would do, without writing anything', () => {
+        expect(storeWith(identityEncryptor).encrypting()).toBe(true);
+        expect(storeWith(unavailableEncryptor).encrypting()).toBe(false);
+
+        // No file may be needed to answer it — this is the startup assertion,
+        // and a check that required a write would be useless at startup.
+        expect(fs.existsSync(path.join(tmpDir, 'sessions'))).toBe(false);
+    });
+
+    it('treats a throwing Encryptor as not encrypting, rather than propagating', () => {
+        // Same tolerance the write path already has: this surface must never
+        // throw, or an assertion on it becomes a crash at startup.
+        const hostile: Encryptor = {
+            isAvailable: () => {
+                throw new Error('keychain exploded');
+            },
+            encrypt: (b) => b,
+            decrypt: (b) => b,
+        };
+        expect(storeWith(hostile).encrypting()).toBe(false);
+    });
+
+    it('reports how the file on disk was ACTUALLY stored', () => {
+        storeWith(identityEncryptor).writeSnapshot('enc', 'secret output');
+        expect(storeWith(identityEncryptor).readSnapshot('enc')!.encrypted).toBe(true);
+
+        storeWith(unavailableEncryptor).writeSnapshot('plain', 'secret output');
+        expect(storeWith(unavailableEncryptor).readSnapshot('plain')!.encrypted).toBe(false);
+    });
+
+    it('agrees with the magic byte, which is what consumers were reading instead', () => {
+        // Pins the mapping to the on-disk format rather than to itself. If these
+        // ever disagree, the accessor is lying and the byte is the truth.
+        storeWith(identityEncryptor).writeSnapshot('enc', 'x');
+        storeWith(unavailableEncryptor).writeSnapshot('plain', 'x');
+
+        const byte0 = (id: string) => fs.readFileSync(path.join(tmpDir, 'sessions', `${id}.snap`))[0];
+        expect(byte0('enc')).toBe(0x01);
+        expect(byte0('plain')).toBe(0x00);
+        expect(storeWith(identityEncryptor).readSnapshot('enc')!.encrypted).toBe(true);
+        expect(storeWith(unavailableEncryptor).readSnapshot('plain')!.encrypted).toBe(false);
+    });
+
+    it('distinguishes "would encrypt now" from "was encrypted then"', () => {
+        // The case that motivated the whole request: a snapshot written while
+        // encryption was unavailable, later read by a process that CAN encrypt.
+        // `encrypting()` says true, the file says false, and a consumer needs
+        // both to know it has plaintext on disk to migrate.
+        storeWith(unavailableEncryptor).writeSnapshot('legacy', 'written before safeStorage was wired');
+
+        const nowEncrypting = storeWith(identityEncryptor);
+        expect(nowEncrypting.encrypting()).toBe(true);
+        expect(nowEncrypting.readSnapshot('legacy')!.encrypted).toBe(false);
+        expect(nowEncrypting.readSnapshot('legacy')!.serialized).toBe('written before safeStorage was wired');
+    });
+});

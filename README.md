@@ -69,6 +69,23 @@ const encryptor: Encryptor = {
 // 3. Snapshot store (T1) rooted under a writable dir (`<dir>/sessions/...`).
 const snapshots = createSnapshotStore({ baseDir: "/var/app/userData", encryptor });
 
+// 3b. ASSERT THE POSTURE IN PRODUCTION. A scrollback is where people type
+// passwords and paste tokens, and when the OS cannot encrypt this store falls
+// back to plaintext gzip on purpose (a broken resume is worse than a plaintext
+// scrollback) — logging ONCE, which is easy to never see. `encrypting()` reports
+// what a write would do right now, needs no file, and never throws:
+if (process.env.NODE_ENV === "production" && !snapshots.encrypting()) {
+  throw new Error("terminal snapshots would be written in plaintext");
+}
+// The real failure this prevents: an Encryptor reporting unavailable because the
+// module loaded OUTSIDE Electron for a test — a development condition wearing
+// the fallback's clothes. If you take that fallback, take it deliberately.
+//
+// `readSnapshot(id)?.encrypted` is the other half: how a file on disk was
+// ACTUALLY stored. The two can disagree — a snapshot written before encryption
+// was wired stays plaintext in a process that now encrypts, which is what you
+// need to know to migrate it.
+
 // 4. Configure + grab the backend.
 configureInProcessBackend({ settings, snapshots });
 const backend = inProcessBackend();
