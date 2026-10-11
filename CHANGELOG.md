@@ -59,6 +59,29 @@ proven.
 
 ### Changed
 
+- **SCOPE: the engine swap covers the IN-PROCESS backend only. Tier 3 — the
+  detached pty-host — still runs `node-pty`, and still has node-pty's retention
+  profile.** Stated here because the rc.1 entry below did not say so, and a
+  reader who takes "an exited terminal cannot retain anything here" together
+  with the `genie#805` framing will reasonably conclude the leak is fixed for
+  them. On Tier 3 it is not.
+
+  `src/pty-host.ts` imports `spawn` from `node-pty` directly. The injected
+  engine port (`BackendDeps.ptySpawn`) exists only in `manager.ts`, so there is
+  no consumer opt-out for the detached host either. The two backends are
+  mutually exclusive — `selectBackend` chooses one at startup — so a consumer on
+  Tier 3 gets none of this release's engine change.
+
+  **And that is the longer-lived of the two hosts**, which is what makes it
+  worth a bullet rather than a footnote: Tier 1/2 ptys die when the app quits,
+  while Tier 3 ptys are designed to survive a full quit, so the detached host is
+  the one that accumulates. It is also where the crash in #13 happened —
+  `mode=standalone`, `pty-host.js`, 21.6 minutes of uptime holding 22 terminals.
+
+  Tracked in #14. Not changed in this release because swapping the detached host
+  needs its own acceptance run, and whether it takes an injected port or a hard
+  swap is a design decision rather than a defect fix.
+
 - **`@particle-academy/fancy-pty` resolves to 0.1.3, not the 0.1.2 the
   acceptance ran on**, because the optional dependency is `>=0.1.1 <2.0` and
   that is correct — a first-party sibling is maintained, not frozen. 0.1.3 is
