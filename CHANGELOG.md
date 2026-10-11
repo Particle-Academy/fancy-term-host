@@ -15,6 +15,61 @@ upgrading.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-11
+
+**0.10.0-rc.1 promoted to `latest`.** The code is identical to rc.1 — same
+commit content, no src change between them — so if you already took
+`@particle-academy/fancy-term-host@next` you have this. What changed is the
+evidence behind it, and one claim that turned out to be wrong.
+
+Everything in the rc.1 entry below applies and is not repeated here. Read that
+one for what the release actually does; this entry is only about what is now
+proven.
+
+### Verified
+
+- **The acceptance, from `claude · tynn`'s record** (`genie2` PR #12), on rc.1 +
+  `fancy-pty@0.1.2` in the `genie-test-windows` VM: the leak check as a GATE at
+  0.000 threads / 0.00 handles / 0.011 MB per exited pty, against node-pty's
+  1.07 / 18.3 / 13.3 MB **in the same VM on the same workload**; host threads 12
+  → 12 with 20 live; "agents hold no pty" 12/12; 652 tests; window smoke 1–40
+  and the layout sweep; and the installed-app update proof with every control —
+  a codex session running and a Workspace terminal open when `install()` is
+  asked, exactly one `fancy-pty-helper.exe` under the install dir, then 0 agent
+  processes and 0 helpers after quit and relaunch. Linux the same set, green.
+
+- **CI now covers the two commits that make up this release.** It did not
+  before: `ci.yml` triggers on `push: [main]` and `pull_request`, and the work
+  sat on a branch that was pushed without a PR — so the last CI run was on the
+  commit where the fancy-pty adapter was still INERT, and the commit that
+  actually switches the default backend had never been tested by CI at all. The
+  rc.1 "Publish to npm" run was green, but that is the publish workflow, not the
+  test lane. Closed before tagging.
+
+- **#4 is now measured, which it previously was not** — see the correction in
+  the rc.1 entry. `fancy-pty` 0.1.3 ships `npm run verify:flash`: 8 spawn/kill
+  cycles on `win32-x64` created 8 `PseudoConsoleWindow`s and showed **0**, on a
+  probe that runs a positive control first and reports VOID rather than PASS if
+  it cannot see a console it opened itself. The naive version of that check
+  would have been wrong in the reassuring direction, since ConPTY creates a
+  window per pty regardless — the discriminator is the `SHOW`, not the window.
+  Measured on an interactive desktop; #4 originally appeared under the
+  windowless detached service host, so that is a narrower claim than the
+  architectural one (this package's engine ships no agent process at all).
+
+### Changed
+
+- **`@particle-academy/fancy-pty` resolves to 0.1.3, not the 0.1.2 the
+  acceptance ran on**, because the optional dependency is `>=0.1.1 <2.0` and
+  that is correct — a first-party sibling is maintained, not frozen. 0.1.3 is
+  error-visibility only and changes nothing about spawning: an `error` with no
+  registered listener now also reaches `process.stderr`, and a synchronous spawn
+  failure names the package and the path. Both are strictly better here, since
+  this package forwards `onError` into the terminal data stream — right for a
+  pty that opened and then broke, useless for one that never opened. Flagged
+  rather than buried: the combination that was accepted and the combination a
+  consumer resolves are not the same two versions.
+
 ## [0.10.0-rc.1] - 2026-10-10
 
 A **prerelease under the `next` dist-tag**, not `latest`. It exists so
@@ -55,8 +110,15 @@ and expect `0.10.0` proper to follow once the acceptance is green.
   un-hidden agent that flashed a console and crashed with "AttachConsole
   failed" (#4). fancy-pty uses the in-box pseudoconsole API directly and ships
   no agent process, so there is no second executable to pop a window, crash, or
-  orphan. #4 is still re-proved rather than assumed — it is in the Windows VM
-  acceptance set.
+  orphan.
+
+  **Correction, 2026-10-11.** This entry originally said #4 was "still re-proved
+  rather than assumed — it is in the Windows VM acceptance set". It was not. The
+  acceptance covered the window smoke (steps 1–40) and the helper is spawned
+  with `windowsHide`, but nothing in it asserted "no console window appeared" as
+  its own control, so the sentence claimed a measurement that had not been made.
+  Caught by checking the acceptance record rather than this file while preparing
+  0.10.0. #4 is now genuinely measured — see the 0.10.0 entry.
 
 - node-pty's `name` option is not carried over either. It wins over `env.TERM`
   in node-pty, and once replaced a caller's TERM with a terminfo lacking `Ms`
