@@ -89,8 +89,27 @@ jobs:
       # Trusted Publishing (OIDC) — no tokens. Requires npm 11.5.1+ (the runner
       # ships npm 10.x), so fetch a fresh npm via npx. The repo's Trusted
       # Publisher (npmjs.com → package → Access) authorizes this workflow.
+      #
+      # A PRERELEASE MUST NOT BECOME `latest`, and nothing here stopped that
+      # before: `npm publish` defaults to the `latest` dist-tag, so tagging
+      # `v0.10.0-rc.1` would have pushed a release candidate to every consumer
+      # running a plain `npm install @particle-academy/fancy-term-host`. Silent,
+      # immediate, and not something a changelog gate or a test suite looks at.
+      #
+      # So the tag is DERIVED from the version rather than passed by hand: any
+      # version carrying a `-` (per semver, a prerelease) publishes under `next`.
+      # A consumer opts in with `@next`; `latest` keeps pointing at the newest
+      # stable until a stable version is published.
       - name: Publish
-        run: npx -y npm@11.18.0 publish --provenance --access public
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if printf '%s' "$VERSION" | grep -q -- '-'; then
+            DIST_TAG=next
+          else
+            DIST_TAG=latest
+          fi
+          echo "Publishing ${VERSION} under dist-tag ${DIST_TAG}"
+          npx -y npm@11.18.0 publish --provenance --access public --tag "$DIST_TAG"
 
       # ---------------------------------------------------------------------
       # Publish the GitHub release, from the changelog entry gated above.

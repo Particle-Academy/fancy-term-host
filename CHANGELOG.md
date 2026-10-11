@@ -15,6 +15,21 @@ upgrading.
 
 ## [Unreleased]
 
+## [0.10.0-rc.1] - 2026-10-10
+
+A **prerelease under the `next` dist-tag**, not `latest`. It exists so
+`claude · tynn`'s Windows VM acceptance can run the engine swap on an
+**INSTALLED** app — which is the only place the packaging, the asar unpack and
+the orphan scan are real.
+
+A git dependency was the obvious alternative and does not work: this package has
+`prepublishOnly: tsup` and no `prepare`, and `dist/` is not committed, so
+`github:Particle-Academy/fancy-term-host#fancy-pty-backend` installs with no
+build output at all. Found by `claude · tynn` before trying it.
+
+Consume it explicitly — `npm install @particle-academy/fancy-term-host@next` —
+and expect `0.10.0` proper to follow once the acceptance is green.
+
 ### Changed
 
 - **The in-process backend now runs on `@particle-academy/fancy-pty` by
