@@ -15,6 +15,48 @@ upgrading.
 
 ## [Unreleased]
 
+### Added
+
+- **A `fancy-pty` backend adapter** (`src/fancy-pty.ts`), inert until wired —
+  an `IPty`-shaped shim over `fancy-pty`'s six calls, so the engine can be
+  swapped at the one seam where the two disagree while T1/T2/T3 persistence,
+  the scrollback and OSC 7 cwd tracking stay untouched and keep their tests.
+
+  `open` is INJECTED rather than imported, which is why this ships before
+  `@particle-academy/fancy-pty` exists on the registry: the adapter's logic is
+  the part that can be wrong, and it is fully covered now (12 tests, no native
+  module, no pty, no platform) rather than after a publish.
+
+  It reconciles three differences, each a real defect if it is not:
+  **node-pty yields strings where fancy-pty yields Buffers** (a per-chunk
+  `toString('utf8')` corrupts multi-byte characters split across chunk
+  boundaries — verified by sabotage: the naive decode fails two of these tests
+  and passes every ASCII one); `spawn(file, args)` versus one `argv` list; and
+  node-pty's `{ exitCode, signal }` versus fancy-pty's single `128 + signal`
+  code, decomposed so existing exit handling is unchanged.
+
+  Two node-pty options are deliberately dropped. **`useConptyDll`** existed to
+  avoid the legacy in-box ConPTY path, whose kill routine forked an un-hidden
+  agent that flashed a console and crashed with "AttachConsole failed" (#4);
+  fancy-pty ships no agent process, so the workaround is not ported because the
+  failure cannot occur. **`name`** wins over `env.TERM` in node-pty and once
+  silently replaced a caller's TERM with a terminfo lacking `Ms`, so OSC 52
+  clipboard copy never fired — fancy-pty has no such option, and a test asserts
+  the adapter does not reintroduce it.
+
+  Faults now reach the user: `fancy-pty` reports a failed spawn or a dead
+  helper, which node-pty had no channel for, and the adapter writes them into
+  the terminal stream rather than swallowing them.
+
+### Why
+
+- `Renaissance-Analytics/genie#805`, reproduced from clean by `claude · tynn`
+  on a Windows 11 VM against this package at 0.9.0: **node-pty retains 1.067
+  threads, 18.27 handles and 13.303 MB per EXITED pty**, at 3.3 s per spawn —
+  120 cycles exhausted a machine in six minutes. fancy-pty gives each pty its
+  own process, so an exited terminal cannot retain anything in this one.
+
+
 ### Changed
 
 - **`docs/packaging.md` now tells you to set `npmRebuild: false`** — the previous
