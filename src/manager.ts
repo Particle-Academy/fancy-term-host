@@ -1,5 +1,6 @@
-import { spawn, IPty } from 'node-pty';
+import { createFancyPtySpawn, type AdaptedPty, type AdaptedSpawnOptions } from './fancy-pty';
 import { EventEmitter } from 'node:events';
+import { createRequire } from 'node:module';
 import { scanOsc7Cwd } from './osc7';
 import { resolveSpawnCwd, toNativeCwd } from './cwd';
 import { cwdHookSpawn } from './shells';
@@ -43,6 +44,64 @@ const CWD_PERSIST_DEBOUNCE_MS = 750;
 export interface BackendDeps {
     settings: SettingsProvider;
     snapshots: SnapshotStore;
+    /**
+     * The PTY engine. Defaults to `fancy-pty`, injectable so a consumer can
+     * supply node-pty's own `spawn` (the signature is deliberately
+     * node-pty-shaped) or a fake in tests.
+     *
+     * WHY THE DEFAULT CHANGED -- Renaissance-Analytics/genie#805, reproduced
+     * from clean by `claude - tynn` on a Windows 11 VM against this package at
+     * 0.9.0: node-pty retains **1.067 threads, 18.27 handles and 13.303 MB per
+     * EXITED pty** at 3.3 s per spawn, and 120 cycles exhausted a machine in
+     * six minutes. fancy-pty gives each pty its own process, so an exited
+     * terminal cannot retain anything HERE -- a property of the shape rather
+     * than a promise about the code. Measured on four platforms: 0.000 threads,
+     * 0.000 handles, <= 0.044 MB per exited pty.
+     *
+     * node-pty is not removed as an OPTION, because the `darwin-x64` and
+     * `win32-arm64` builds have not run natively anywhere yet (their code paths
+     * have, on the other arch of each OS). Injecting it back is one line.
+     */
+    ptySpawn?: PtySpawn;
+}
+
+/** node-pty's `spawn` signature, which fancy-pty's adapter also satisfies. */
+export type PtySpawn = (file: string, args: string[], opts: AdaptedSpawnOptions) => AdaptedPty;
+
+/**
+ * The default engine, resolved lazily.
+ *
+ * Lazy because `fancy-pty` is an `optionalDependency`: a consumer of the
+ * pure-JS `./ipc` subpath can `npm install --omit=optional` and must not have
+ * this module throw at IMPORT time for an engine they never use. That is the
+ * same reason node-pty was optional, preserved rather than quietly dropped.
+ */
+let defaultSpawn: PtySpawn | undefined;
+function engineFor(deps: BackendDeps): PtySpawn {
+    if (deps.ptySpawn) return deps.ptySpawn;
+    if (!defaultSpawn) {
+        /**
+         * `createRequire`, NOT a bare `require`.
+         *
+         * A bare `require()` works in the CJS build and THROWS in the ESM one:
+         * esbuild replaces it with a stub that raises
+         * `Dynamic require of "…" is not supported`, because `require` does not
+         * exist in an ES module. So the default engine was reachable from
+         * `dist/index.cjs` and dead from `dist/index.js` — and the ESM entry is
+         * the one an Electron main bundle uses.
+         *
+         * Nothing in the 187-test suite caught it, because every test injects
+         * `ptySpawn` and so never walks this branch. It took running a real
+         * terminal through the built ESM entry. That is why
+         * `default-engine.test.ts` now exercises BOTH built halves.
+         */
+        const req = createRequire(import.meta.url);
+        const loaded = req('@particle-academy/fancy-pty') as {
+            open: Parameters<typeof createFancyPtySpawn>[0];
+        };
+        defaultSpawn = createFancyPtySpawn(loaded.open);
+    }
+    return defaultSpawn;
 }
 
 const inertDeps: BackendDeps = {
@@ -77,7 +136,7 @@ class InProcessBackend extends EventEmitter implements PtyBackend {
         this.deps = deps;
     }
 
-    private readonly ptys = new Map<string, IPty>();
+    private readonly ptys = new Map<string, AdaptedPty>();
     private readonly scrollback = new Map<string, string>();
     private readonly shells = new Map<string, string>();
     /** Last cwd reported by each pty via OSC-7 (in-memory, authoritative). */
@@ -136,7 +195,7 @@ class InProcessBackend extends EventEmitter implements PtyBackend {
         // OSC 52 copy never fired. Drive `name` from the resolved TERM.
         env.TERM = env.TERM || 'xterm-256color';
 
-        const pty = spawn(shell, args, {
+        const pty = engineFor(this.deps)(shell, args, {
             name: env.TERM,
             // Native-convert + validate the requested dir; a stale/foreign/MSYS
             // cwd (e.g. Git Bash's /c/Users/me) would otherwise crash spawn with
@@ -145,23 +204,22 @@ class InProcessBackend extends EventEmitter implements PtyBackend {
             cols: opts.cols ?? 80,
             rows: opts.rows ?? 24,
             env,
-            // Use node-pty's bundled MODERN ConPTY (conpty.dll + its own
-            // OpenConsole) instead of the legacy in-box conhost path. Windows-only;
-            // ignored elsewhere. This matters specifically for the DETACHED pty-host
-            // (genie-adapter spawnDetached: a windowless `detached` standalone
-            // node.exe with no console of its own):
-            //   • Legacy ConPTY, lacking a host console, allocates a NEW VISIBLE
-            //     console per shell → on Win11 (default terminal = Windows Terminal)
-            //     that surfaces as a stray WindowsTerminal window. conpty.dll does
-            //     not pop a window for a console-less host.
-            //   • The legacy KILL path forks `conpty_console_list_agent` UN-hidden
-            //     to enumerate the console process list; under the windowless host
-            //     that fork both flashes a console AND crashes with
-            //     "AttachConsole failed". The conpty.dll kill path takes neither
-            //     fork, so the crash + flash are gone.
-            // Verified deterministically: with this on, kill() spawns no agent and
-            // throws nothing; off, every kill forks the agent and it crashes.
-            useConptyDll: true,
+            // `useConptyDll: true` USED TO BE HERE, and its absence is the
+            // point rather than an omission.
+            //
+            // It selected node-pty's bundled modern ConPTY over the legacy
+            // in-box conhost path, because under the windowless DETACHED
+            // pty-host the legacy path allocated a visible console per shell
+            // (a stray Windows Terminal window on Win11), and its KILL path
+            // forked `conpty_console_list_agent` un-hidden, which both flashed
+            // a console and crashed with "AttachConsole failed" (#4).
+            //
+            // fancy-pty calls the in-box pseudoconsole API directly and ships
+            // NO agent process at all, so there is no second executable to pop
+            // a window, to crash, or to orphan. The workaround is not ported
+            // because the failure it worked around cannot occur. #4 is still
+            // re-proved rather than assumed: it is in tynn's Windows VM
+            // acceptance set, unchanged.
         });
 
         this.ptys.set(opts.id, pty);

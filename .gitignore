@@ -3,3 +3,7 @@ dist/
 *.log
 .DS_Store
 coverage/
+
+# Scratch build dir for default-engine.test.ts (inside the repo so module
+# resolution reaches node_modules; see that file's header).
+.tmp-default-engine/

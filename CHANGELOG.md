@@ -15,6 +15,58 @@ upgrading.
 
 ## [Unreleased]
 
+### Changed
+
+- **The in-process backend now runs on `@particle-academy/fancy-pty` by
+  default**, replacing `node-pty`. The engine is an injected port
+  (`BackendDeps.ptySpawn`) whose signature is deliberately node-pty-shaped, so
+  passing node-pty's own `spawn` back in is one line — kept available because
+  the `darwin-x64` and `win32-arm64` builds have not run natively anywhere yet,
+  though their code paths have on the other arch of each OS.
+
+  **Nothing a consumer calls changes.** Same four verbs, same two events, same
+  T1/T2/T3 persistence, same OSC 7 cwd tracking.
+
+  Why: `Renaissance-Analytics/genie#805`, reproduced from clean by
+  `claude · tynn` on a Windows 11 VM against this package at 0.9.0 — node-pty
+  retains **1.067 threads, 18.27 handles and 13.303 MB per EXITED pty** at 3.3 s
+  per spawn, and 120 cycles exhausted a machine in six minutes. fancy-pty gives
+  each pty its own process, so an exited terminal cannot retain anything here.
+  Measured on four platforms: 0.000 threads, 0.000 handles, <= 0.044 MB.
+
+- **`useConptyDll` is gone, and its absence is the point.** It selected
+  node-pty's bundled modern ConPTY because the legacy path allocated a visible
+  console under the windowless detached host and its kill path forked an
+  un-hidden agent that flashed a console and crashed with "AttachConsole
+  failed" (#4). fancy-pty uses the in-box pseudoconsole API directly and ships
+  no agent process, so there is no second executable to pop a window, crash, or
+  orphan. #4 is still re-proved rather than assumed — it is in the Windows VM
+  acceptance set.
+
+- node-pty's `name` option is not carried over either. It wins over `env.TERM`
+  in node-pty, and once replaced a caller's TERM with a terminfo lacking `Ms`
+  so OSC 52 clipboard copy never fired. fancy-pty has no such option, and a
+  test asserts the adapter does not reintroduce one.
+
+### Added
+
+- `src/__tests__/default-engine.test.ts` — drives the DEFAULT engine through
+  both BUILT halves with a real shell. It exists because 187 tests passed over
+  a bug that made the default engine dead in ESM: `engineFor` used a bare
+  `require()`, which works in the CJS output and throws
+  `Dynamic require of "…" is not supported` in the ESM one. Every other test
+  injects `ptySpawn`, so none of them ever walked that branch — and the ESM
+  entry is the one an Electron main bundle uses.
+
+### Fixed
+
+- The three remaining `vi.mock('node-pty')` module mocks are gone; those tests
+  inject a fake through `ptySpawn` like the `SettingsProvider` and
+  `SnapshotStore` doubles already did. A module mock was the last thing
+  reaching around the seam, and it broke the moment the engine stopped being
+  imported by name.
+
+
 ### Added
 
 - **A `fancy-pty` backend adapter** (`src/fancy-pty.ts`), inert until wired —

@@ -170,13 +170,47 @@ describe('the built entry loads no native module', () => {
 
     /** A static or dynamic import of node-pty or electron — statements only, since
      *  the bundle keeps comments and one of them quotes `require('node-pty')`. */
+    // `@particle-academy/fancy-pty` joins the list, and the engine is now
+    // reached by `require()` rather than a static import, so the pattern has to
+    // see a CommonJS require as well.
+    //
+    // The `./ipc` promise is "ships with nothing native". fancy-pty's JS is
+    // pure — but it exists to spawn a native EXECUTABLE and carries 4.26 MB of
+    // them, so a subpath that pulled it in would satisfy the letter of "no
+    // .node addon" while breaking the thing the subpath is for. It counts.
+    // The `require` alternative is anchored to a STATEMENT position
+    // (`[=(,]\s*`), exactly as the dynamic-`import` one above it is, and that
+    // anchor is not decoration.
+    //
+    // An unanchored `require\(` matched a COMMENT — `manager.ts` carries the
+    // line "its require('node-pty') resolves to the unpacked .node", which
+    // survives into the bundle as prose, so the check reported that `./ipc`
+    // reached a native module when it reached a sentence about one. A check
+    // that matches prose fails in the alarming direction, which is the better
+    // one, but it is still wrong and it would have been "fixed" by someone
+    // loosening the real guarantee.
+    //
+    // The call form is ANY identifier, not literally `require`. The engine is
+    // loaded through `createRequire(import.meta.url)`, so the bundle emits a
+    // call on a local variable — `req("@particle-academy/fancy-pty")` — which
+    // esbuild leaves untouched because it is not a recognised require. Pinning
+    // the pattern to `require(` made this check blind to the very reference it
+    // was extended to find.
     const nativeImport =
-        /^\s*(?:import|export)\b[^;]*?from\s*['"](?:node-pty|electron)['"]|^\s*import\s*['"](?:node-pty|electron)['"]|[=(,]\s*(?:await\s+)?import\(\s*['"](?:node-pty|electron)['"]\s*\)/m;
+        /^\s*(?:import|export)\b[^;]*?from\s*['"](?:node-pty|electron|@particle-academy\/fancy-pty)['"]|^\s*import\s*['"](?:node-pty|electron|@particle-academy\/fancy-pty)['"]|[=(,]\s*(?:await\s+)?[\w$.]*\(\s*['"](?:node-pty|electron|@particle-academy\/fancy-pty)['"]\s*\)/m;
 
     it('the ESM entry reaches no node-pty and no electron', () => {
         const graph = [...esmGraph(path.join(out, 'ipc.js'))];
 
-        // The control: the root entry DOES import node-pty, so the check can see one.
+        // THE CONTROL, and it earned its keep today. The root entry must reach
+        // the engine, so the check is known to be able to SEE one — without
+        // this, a pattern matching nothing would pass the loop below vacuously
+        // and the native-free guarantee would be unverified.
+        //
+        // It is also what caught the engine swap: this assertion failed the
+        // moment `manager.ts` stopped importing node-pty by name, while the
+        // subject assertion kept passing. A control that goes red when the
+        // known-positive stops being positive is the entire reason to have one.
         const rootGraph = [...esmGraph(path.join(out, 'index.js'))];
         expect(rootGraph.some((f) => nativeImport.test(fs.readFileSync(f, 'utf8')))).toBe(true);
 
@@ -192,6 +226,10 @@ describe('the built entry loads no native module', () => {
         const loaded = Object.keys(req.cache).filter((k) => !before.has(k));
 
         expect(typeof ipc.encodeFrame).toBe('function');
-        expect(loaded.some((k) => k.includes('node-pty') || k.endsWith('.node'))).toBe(false);
+        expect(
+            loaded.some(
+                (k) => k.includes('node-pty') || k.includes('fancy-pty') || k.endsWith('.node'),
+            ),
+        ).toBe(false);
     });
 });

@@ -19,18 +19,15 @@ import { encodeFrame, FrameDecoder, PROTOCOL_VERSION, type ClientMessage, type H
  */
 
 // node-pty fake so the in-process fallback backend can be constructed if touched.
-vi.mock('node-pty', () => ({
-    spawn: () => ({
-        pid: 1,
-        process: 'fake',
-        onData: () => {},
-        onExit: () => {},
-        write: () => {},
-        resize: () => {},
-        kill: () => {},
-    }),
-}));
-
+/**
+ * No `vi.mock('node-pty')` any more, and that is the point.
+ *
+ * The PTY engine is an INJECTED port (`BackendDeps.ptySpawn`), so a fake goes
+ * in the same way the SettingsProvider and SnapshotStore doubles already do —
+ * which is the inversion this file's own comment describes. A module mock was
+ * the last thing here reaching around the seam, and it broke the moment the
+ * engine stopped being imported by name.
+ */
 import { initTerminalBackend, isHostBacked, configureHostLifecycle } from '../host-lifecycle';
 import { configureInProcessBackend } from '../manager';
 import { readPidfile, writePidfile } from '../host-locate';
@@ -93,7 +90,16 @@ beforeEach(() => {
     userData = fs.mkdtempSync(path.join(os.tmpdir(), 'genie-lifecycle-'));
     settings = { detached_terminals: 'on' };
     statuses.length = 0;
-    configureInProcessBackend({ settings: settingsProvider, snapshots: noSnapshots });
+    configureInProcessBackend({
+    ptySpawn: () => ({
+        pid: 1,
+        process: 'fake',
+        onData: () => {},
+        onExit: () => {},
+        write: () => {},
+        resize: () => {},
+        kill: () => {},
+    }), settings: settingsProvider, snapshots: noSnapshots });
 });
 
 afterEach(async () => {

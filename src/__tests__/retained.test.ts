@@ -63,14 +63,15 @@ function makeFakePty(): FakePty {
     return p;
 }
 
-vi.mock('node-pty', () => ({
-    spawn: () => {
-        const p = makeFakePty();
-        spawned.push(p);
-        return p;
-    },
-}));
-
+/**
+ * No `vi.mock('node-pty')` any more, and that is the point.
+ *
+ * The PTY engine is an INJECTED port (`BackendDeps.ptySpawn`), so a fake goes
+ * in the same way the SettingsProvider and SnapshotStore doubles already do —
+ * which is the inversion this file's own comment describes. A module mock was
+ * the last thing here reaching around the seam, and it broke the moment the
+ * engine stopped being imported by name.
+ */
 import { terminalManager, configureInProcessBackend } from '../manager';
 
 /**
@@ -83,6 +84,11 @@ import { terminalManager, configureInProcessBackend } from '../manager';
  */
 const cwdEvents: Array<{ id: string; cwd: string }> = [];
 configureInProcessBackend({
+    ptySpawn: () => {
+        const p = makeFakePty();
+        spawned.push(p);
+        return p;
+    },
     settings: { get: (k) => (k === 'track_cwd' ? 'off' : undefined) },
     snapshots: {
         readSnapshot: () => null,

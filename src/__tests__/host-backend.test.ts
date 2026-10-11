@@ -21,18 +21,15 @@ import type { SnapshotStore } from '../sessions';
  */
 
 // node-pty fake so the in-process backend can be constructed if touched.
-vi.mock('node-pty', () => ({
-    spawn: () => ({
-        pid: 1,
-        process: 'fake',
-        onData: () => {},
-        onExit: () => {},
-        write: () => {},
-        resize: () => {},
-        kill: () => {},
-    }),
-}));
-
+/**
+ * No `vi.mock('node-pty')` any more, and that is the point.
+ *
+ * The PTY engine is an INJECTED port (`BackendDeps.ptySpawn`), so a fake goes
+ * in the same way the SettingsProvider and SnapshotStore doubles already do —
+ * which is the inversion this file's own comment describes. A module mock was
+ * the last thing here reaching around the seam, and it broke the moment the
+ * engine stopped being imported by name.
+ */
 import {
     initTerminalBackend,
     isHostBacked,
@@ -66,7 +63,16 @@ const nullSpawner: HostSpawner = {
     },
 };
 
-configureInProcessBackend({ settings: settingsProvider, snapshots: noSnapshots });
+configureInProcessBackend({
+    ptySpawn: () => ({
+        pid: 1,
+        process: 'fake',
+        onData: () => {},
+        onExit: () => {},
+        write: () => {},
+        resize: () => {},
+        kill: () => {},
+    }), settings: settingsProvider, snapshots: noSnapshots });
 configureHostLifecycle({
     spawner: nullSpawner,
     settings: settingsProvider,
