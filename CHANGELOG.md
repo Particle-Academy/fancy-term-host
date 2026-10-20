@@ -15,9 +15,33 @@ upgrading.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-20
+
 **Scrollback without an O(n) copy per chunk** (Genie F5, 2.0.0-beta.33). Nothing
 to do on upgrade: every reader returns what it returned in 0.10.0, proven by a
 contract suite that ran green against 0.10.0 BEFORE the storage was replaced.
+The `@particle-academy/fancy-pty` dependency and its range are unchanged.
+
+### Measured
+
+100 MiB through one pty's onData path, v0.10.0 vs this code, built and run in
+the SAME GitHub runner job (`.github/workflows/bench.yml`, run 39505332860),
+two alternating rounds each:
+
+| chunk | build | CPU ms (user+sys) | peak JS heap MiB | max RSS MiB |
+|---|---|---|---|---|
+| 4 KiB | 0.10.0 | 13,044 / 12,970 | 77.9 / 75.0 | 134.4 / 141.9 |
+| 4 KiB | 0.11.0 | 77 / 81 | 21.9 / 22.8 | 92.2 / 92.2 |
+| 1 KiB | 0.10.0 | 52,543 / 52,526 | 77.5 / 73.6 | 138.9 / 133.6 |
+| 1 KiB | 0.11.0 | 82 / 80 | 21.8 / 21.8 | 90.9 / 91.1 |
+
+Every run checked its final scrollback against the last 1,000,000 code units
+of the stream (`ok: true`). Most of 0.10.0's cost was SYSTEM time (~85%):
+allocating and freeing a fresh ~1 MB string per chunk, not the copying alone.
+Absolute numbers vary by runner -- the same 0.10.0 build took 8.5 s at 4 KiB
+on the control run (39504832053, old vs old, within 3%) -- so compare within
+one run. Command:
+`node --expose-gc bench/scrollback.mjs <distDir> --mb 100 --chunk 4096`.
 
 ### Changed
 
