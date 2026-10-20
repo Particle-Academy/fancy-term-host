@@ -36,8 +36,8 @@ import {
 import { socketPathFor, pidfilePath } from './host-locate';
 import { resolveSpawnCwd } from './cwd';
 import { PtyRegistry } from './pty-registry';
+import { Scrollback } from './scrollback';
 
-const SCROLLBACK_MAX = 1_000_000;
 /** Self-exit after this long with no ptys AND no connected client. */
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 const IDLE_CHECK_MS = 60 * 1000;
@@ -84,7 +84,7 @@ function enableCrashReports(dir: string): void {
 interface HostPty {
     pty: IPty;
     shell: string;
-    scrollback: string;
+    scrollback: Scrollback;
 }
 
 const ptys = new PtyRegistry<IPty>();
@@ -112,6 +112,7 @@ async function createPty(opts: {
     cols?: number;
     rows?: number;
     env?: Record<string, string>;
+    scrollbackMax?: number;
 }): Promise<{ pid: number; shell: string; existing: boolean; scrollback: string }> {
     // Attach-or-spawn is the registry's decision, not this function's. It returns
     // a live pty unchanged, and for a free id calls `make` -- but NEVER while a
@@ -123,7 +124,7 @@ async function createPty(opts: {
         pid: entry.pty.pid,
         shell: entry.shell,
         existing,
-        scrollback: existing ? entry.scrollback : '',
+        scrollback: existing ? entry.scrollback.toString() : '',
     };
 }
 
@@ -136,6 +137,7 @@ function makePty(opts: {
     cols?: number;
     rows?: number;
     env?: Record<string, string>;
+    scrollbackMax?: number;
 }): HostPty {
     const shell = opts.shell ?? defaultShell();
     const env = { ...process.env, ...(opts.env ?? {}) } as Record<string, string>;
@@ -164,12 +166,10 @@ function makePty(opts: {
         useConptyDll: true,
     });
 
-    const entry: HostPty = { pty, shell, scrollback: '' };
+    const entry: HostPty = { pty, shell, scrollback: new Scrollback(opts.scrollbackMax) };
 
     pty.onData((data) => {
-        const next = entry.scrollback + data;
-        entry.scrollback =
-            next.length > SCROLLBACK_MAX ? next.slice(-SCROLLBACK_MAX) : next;
+        entry.scrollback.append(data);
         broadcast({ kind: 'data', id: opts.id, data });
     });
     pty.onExit(({ exitCode, signal }) => {
@@ -256,7 +256,7 @@ async function handleClientMessage(sock: net.Socket, msg: ClientMessage): Promis
             reply(sock, {
                 kind: 'scrollback-result',
                 seq: msg.seq,
-                scrollback: ptys.get(msg.id)?.scrollback ?? null,
+                scrollback: ptys.get(msg.id)?.scrollback.toString() ?? null,
             });
             break;
         case 'ping':

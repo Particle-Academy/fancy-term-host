@@ -10,6 +10,7 @@ import {
     type HostMessage,
 } from './host-protocol';
 import type { SnapshotStore } from './sessions';
+import { Scrollback, DEFAULT_SCROLLBACK_MAX } from './scrollback';
 
 /**
  * HostClient — the Tier 3 PtyBackend that proxies every call to the DETACHED
@@ -39,8 +40,6 @@ import type { SnapshotStore } from './sessions';
  * backend with a non-fatal toast.
  */
 
-const SCROLLBACK_MAX = 1_000_000;
-
 /**
  * How long a correlated request waits before giving up. Generous, because a
  * `get-scrollback` on a busy pty is real work — the point is to bound the wait,
@@ -67,7 +66,7 @@ export interface HostClientOptions {
 interface MirrorEntry {
     pid: number;
     shell: string;
-    scrollback: string;
+    scrollback: Scrollback;
 }
 
 export class HostClient extends EventEmitter implements PtyBackend {
@@ -212,11 +211,7 @@ export class HostClient extends EventEmitter implements PtyBackend {
         switch (msg.kind) {
             case 'data': {
                 const entry = this.mirror.get(msg.id);
-                if (entry) {
-                    const next = entry.scrollback + msg.data;
-                    entry.scrollback =
-                        next.length > SCROLLBACK_MAX ? next.slice(-SCROLLBACK_MAX) : next;
-                }
+                if (entry) entry.scrollback.append(msg.data);
                 this.emit('data', msg.id, msg.data);
                 return;
             }
@@ -350,10 +345,18 @@ export class HostClient extends EventEmitter implements PtyBackend {
                 seq: this.nextSeq(),
                 id: t.id,
             })) as Extract<HostMessage, { kind: 'scrollback-result' }>;
+            // Seeded VERBATIM, as 0.10.0 did: the host already bounded it, and
+            // `list` does not carry the pty's own cap, so trimming here to the
+            // default would cut a pty spawned with a larger one. The cap is
+            // therefore the larger of the default and what the host holds.
+            const seeded = sb.scrollback ?? '';
             this.mirror.set(t.id, {
                 pid: t.pid,
                 shell: t.shell,
-                scrollback: sb.scrollback ?? '',
+                scrollback: new Scrollback(
+                    Math.max(DEFAULT_SCROLLBACK_MAX, seeded.length),
+                    seeded,
+                ),
             });
         }
     }
@@ -438,13 +441,17 @@ export class HostClient extends EventEmitter implements PtyBackend {
                 pid: existing.pid,
                 shell: existing.shell,
                 existing: true,
-                scrollback: existing.scrollback,
+                scrollback: existing.scrollback.toString(),
             };
         }
         // Cold create: seed the mirror immediately (pid 0 until the host echoes
         // the real one), fire the create request, and surface any on-disk
         // snapshot exactly like the in-process backend does on a cold spawn.
-        this.mirror.set(opts.id, { pid: 0, shell: opts.shell ?? '', scrollback: '' });
+        this.mirror.set(opts.id, {
+            pid: 0,
+            shell: opts.shell ?? '',
+            scrollback: new Scrollback(opts.scrollbackMax),
+        });
         this.request({ kind: 'create', seq: this.nextSeq(), opts })
             .then((reply) => {
                 if (reply.kind !== 'created') return;
@@ -532,6 +539,6 @@ export class HostClient extends EventEmitter implements PtyBackend {
     }
 
     getScrollback(id: string): string | undefined {
-        return this.mirror.get(id)?.scrollback;
+        return this.mirror.get(id)?.scrollback.toString();
     }
 }

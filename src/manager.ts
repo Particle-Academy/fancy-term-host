@@ -8,6 +8,7 @@ import type { PtyBackend } from './backend';
 import type { CreateTerminalOpts, TerminalInfo, AttachResult } from './types';
 import type { SettingsProvider } from './ports';
 import type { SnapshotStore } from './sessions';
+import { Scrollback } from './scrollback';
 
 export type { CreateTerminalOpts, TerminalInfo, AttachResult } from './types';
 
@@ -26,9 +27,6 @@ export type { CreateTerminalOpts, TerminalInfo, AttachResult } from './types';
  * as a `'cwd'` event rather than written to the DB directly. Genie's adapter
  * subscribes to `'cwd'` → `updateTerminalSpec({ live_cwd })`.
  */
-
-/** ~1 MB per pty. Enough for an hour of typical dev output without runaway memory. */
-const SCROLLBACK_MAX = 1_000_000;
 
 /** Debounce window for emitting an OSC-7 cwd change (the adapter persists it). */
 const CWD_PERSIST_DEBOUNCE_MS = 750;
@@ -137,7 +135,7 @@ class InProcessBackend extends EventEmitter implements PtyBackend {
     }
 
     private readonly ptys = new Map<string, AdaptedPty>();
-    private readonly scrollback = new Map<string, string>();
+    private readonly scrollback = new Map<string, Scrollback>();
     private readonly shells = new Map<string, string>();
     /** Last cwd reported by each pty via OSC-7 (in-memory, authoritative). */
     private readonly liveCwd = new Map<string, string>();
@@ -167,7 +165,7 @@ class InProcessBackend extends EventEmitter implements PtyBackend {
                 pid: existing.pid,
                 shell: this.shells.get(opts.id) ?? existing.process,
                 existing: true,
-                scrollback: this.scrollback.get(opts.id) ?? '',
+                scrollback: this.scrollback.get(opts.id)?.toString() ?? '',
             };
         }
         const shell = opts.shell ?? defaultShell();
@@ -224,15 +222,22 @@ class InProcessBackend extends EventEmitter implements PtyBackend {
 
         this.ptys.set(opts.id, pty);
         this.shells.set(opts.id, shell);
-        this.scrollback.set(opts.id, '');
+        const cap = opts.scrollbackMax;
+        this.scrollback.set(opts.id, new Scrollback(cap));
 
         pty.onData((data) => {
-            const buf = this.scrollback.get(opts.id) ?? '';
-            const next = buf + data;
-            this.scrollback.set(
-                opts.id,
-                next.length > SCROLLBACK_MAX ? next.slice(-SCROLLBACK_MAX) : next,
-            );
+            // Looked up by id on every chunk, NOT captured in this closure, and
+            // re-created when missing -- exactly as 0.10.0 did (`get(id) ?? ''`).
+            // That matters in a race: after kill() and a recreate of the same
+            // id, the OLD pty's late onExit deletes this map entry by id. With a
+            // captured buffer the NEW live pty would keep writing into one
+            // nobody can read; looked up, its next chunk starts a fresh one.
+            let scrollback = this.scrollback.get(opts.id);
+            if (!scrollback) {
+                scrollback = new Scrollback(cap);
+                this.scrollback.set(opts.id, scrollback);
+            }
+            scrollback.append(data);
             // Tier 1.5: watch for OSC-7 cwd reports and persist the latest,
             // debounced. The in-memory map is authoritative; the spec row is a
             // durable mirror for the next launch.
@@ -385,7 +390,7 @@ class InProcessBackend extends EventEmitter implements PtyBackend {
      * quit so its post-disable output still lands in a snapshot (T2→T1 degrade).
      */
     getScrollback(id: string): string | undefined {
-        return this.scrollback.get(id);
+        return this.scrollback.get(id)?.toString();
     }
 }
 

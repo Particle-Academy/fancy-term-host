@@ -37,6 +37,8 @@ export type ClientMessage =
               cols?: number;
               rows?: number;
               env?: Record<string, string>;
+              /** Optional, additive: an older host ignores it. */
+              scrollbackMax?: number;
           };
       }
     | { kind: 'write'; id: string; data: string }

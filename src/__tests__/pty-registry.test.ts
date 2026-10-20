@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { PtyRegistry, type PtyEntry, type RegistryPty } from "../pty-registry";
+import { Scrollback } from "../scrollback";
 
 /**
  * A create must never overlap a dispose of the same id (#13).
@@ -27,7 +28,7 @@ class FakePty implements RegistryPty {
 let nextPid = 1000;
 
 function entry(): PtyEntry<FakePty> {
-    return { pty: new FakePty(nextPid++), shell: "bash", scrollback: "" };
+    return { pty: new FakePty(nextPid++), shell: "bash", scrollback: new Scrollback() };
 }
 
 describe("PtyRegistry", () => {

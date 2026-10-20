@@ -20,6 +20,17 @@ export interface CreateTerminalOpts {
     rows?: number;
     /** Extra env overrides. Merged on top of process.env. */
     env?: Record<string, string>;
+    /**
+     * Scrollback kept for THIS pty, in UTF-16 code units: what a late-joining
+     * window replays and what `getScrollback` returns. Defaults to 1,000,000.
+     * A smaller cap suits a supervised or background pty nobody reads back in
+     * full; `0` keeps nothing. Non-finite or negative values use the default.
+     *
+     * Fixed at spawn: passing it on an attach to a live pty changes nothing.
+     * On the detached host it reaches a host at 0.11.0 or later; an older host
+     * ignores it and keeps the default, which is the 0.10.0 behaviour.
+     */
+    scrollbackMax?: number;
 }
 
 export interface TerminalInfo {

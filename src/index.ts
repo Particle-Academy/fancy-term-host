@@ -26,6 +26,9 @@ export {
 } from "./manager";
 export type { BackendDeps, TerminalManager } from "./manager";
 
+// ── Bounded per-pty scrollback (the store behind every replay) ─────────────
+export { Scrollback, DEFAULT_SCROLLBACK_MAX, resolveScrollbackMax } from "./scrollback";
+
 // ── Snapshot store (Tier 1: encrypted, gzipped session state to disk) ───────
 export { createSnapshotStore } from "./sessions";
 export type { SnapshotStore, SnapshotRead } from "./sessions";

@@ -116,6 +116,10 @@ const { id, scrollback } = backend.create({ id: "t1", cols: 80, rows: 24 });
 backend.on("data", (tid, data) => sendToClient(tid, data)); // → <Terminal output>
 backend.on("exit", (tid) => closeOnClient(tid));
 
+// Each pty keeps the last 1,000,000 UTF-16 code units for replay by default.
+// A supervised/background pty nobody reads back in full can keep less:
+backend.create({ id: "worker", cwd: "/srv", scrollbackMax: 100_000 });
+
 // Client keystrokes (fancy-term `onData`) come back here:
 onClientData("t1", (d) => backend.write("t1", d));
 onClientResize("t1", (cols, rows) => backend.resize("t1", cols, rows));

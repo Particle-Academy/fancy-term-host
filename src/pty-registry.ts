@@ -44,6 +44,8 @@
  * answering for one id is not.
  */
 
+import type { Scrollback } from './scrollback';
+
 /** The slice of node-pty's `IPty` this registry needs. Kept minimal so tests need no native module. */
 export interface RegistryPty {
     readonly pid: number;
@@ -53,7 +55,7 @@ export interface RegistryPty {
 export interface PtyEntry<P extends RegistryPty = RegistryPty> {
     pty: P;
     shell: string;
-    scrollback: string;
+    scrollback: Scrollback;
 }
 
 interface Slot<P extends RegistryPty> {

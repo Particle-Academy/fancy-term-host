@@ -15,17 +15,56 @@ upgrading.
 
 ## [Unreleased]
 
+**Scrollback without an O(n) copy per chunk** (Genie F5, 2.0.0-beta.33). Nothing
+to do on upgrade: every reader returns what it returned in 0.10.0, proven by a
+contract suite that ran green against 0.10.0 BEFORE the storage was replaced.
+
+### Changed
+
+- **The scrollback is a chunk list, not a string rebuilt on every chunk.**
+  Through 0.10.0 each of the three copies (in-process backend, HostClient
+  mirror, detached pty-host) did `buf + data` and then `slice(-1_000_000)`.
+  The concatenation is cheap in V8, but the slice flattens it, so once a pty's
+  buffer was full **every chunk copied ~1,000,000 code units** on the thread
+  that owns the backend -- for an Electron app, the main thread. All three now
+  share `Scrollback` (`src/scrollback.ts`): append is amortised O(chunk), the
+  front is trimmed by dropping whole chunks plus an offset, and the joined
+  string is built on READ and cached until the next write.
+- **The cost moved from write to read, and that is the trade.** `getScrollback`
+  and a warm-attach `create` now join the chunks (O(retained), once, then
+  cached); in 0.10.0 they returned an existing string. They are called on
+  attach and at quit-time snapshot, not per chunk. If you poll `getScrollback`
+  on a busy pty, each call after new output pays one join.
+
 ### Added
 
+- **`CreateTerminalOpts.scrollbackMax`** -- a per-pty cap in UTF-16 code units,
+  default 1,000,000 (unchanged). A supervised or background pty can keep less;
+  `0` keeps nothing while still streaming every chunk. Fixed at spawn. Honoured
+  by the in-process backend, the HostClient mirror and the detached pty-host; a
+  pty-host older than 0.11.0 ignores the field and keeps the default (additive,
+  no protocol version change).
+- **`Scrollback`, `DEFAULT_SCROLLBACK_MAX`, `resolveScrollbackMax`** exported,
+  for a consumer keeping its own bounded buffer.
 - **The scrollback's observable contract is now pinned by tests**
   (`src/__tests__/scrollback-contract.test.ts`), written against 0.10.0's
   storage before it is replaced: the last 1,000,000 code units exactly, chunk
   boundaries, surrogate pairs split across chunks, the warm-attach replay, the
-  HostClient mirror, and the two trimming quirks 0.10.0 has (see below).
+  HostClient mirror, and the two trimming quirks below.
 - **`bench/scrollback.mjs`** pushes N MiB through one pty's onData path in a
   BUILT backend and prints CPU time, wall time, peak heap and max RSS as JSON,
   and checks the final scrollback is correct. `.github/workflows/bench.yml`
   runs it old-vs-new on the same CI runner.
+
+### Unchanged on purpose (0.10.0 quirks, now pinned rather than fixed)
+
+- **Trimming counts UTF-16 code units, not characters.** A cut can fall between
+  the halves of a surrogate pair, so a full scrollback can begin with a lone
+  low surrogate (one replacement glyph in the first cell of a replay).
+- **Trimming is not escape-aware.** A full scrollback can begin partway through
+  an escape sequence (e.g. `5;196m` left over from an SGR). A replay already
+  starts mid-stream, so renderers have always had to tolerate this.
+- Both are separate decisions from this change and were left as they were.
 
 ## [0.10.0] - 2026-10-11
 
