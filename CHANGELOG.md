@@ -15,6 +15,18 @@ upgrading.
 
 ## [Unreleased]
 
+### Added
+
+- **The scrollback's observable contract is now pinned by tests**
+  (`src/__tests__/scrollback-contract.test.ts`), written against 0.10.0's
+  storage before it is replaced: the last 1,000,000 code units exactly, chunk
+  boundaries, surrogate pairs split across chunks, the warm-attach replay, the
+  HostClient mirror, and the two trimming quirks 0.10.0 has (see below).
+- **`bench/scrollback.mjs`** pushes N MiB through one pty's onData path in a
+  BUILT backend and prints CPU time, wall time, peak heap and max RSS as JSON,
+  and checks the final scrollback is correct. `.github/workflows/bench.yml`
+  runs it old-vs-new on the same CI runner.
+
 ## [0.10.0] - 2026-10-11
 
 **0.10.0-rc.1 promoted to `latest`.** The code is identical to rc.1 — same

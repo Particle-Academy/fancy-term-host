@@ -1,0 +1,77 @@
+name: Scrollback bench
+
+# Old vs new on the SAME runner, in one job, so the comparison is not between
+# two machines. Builds a baseline ref (default: the last release) and this
+# commit, then runs bench/scrollback.mjs against each built artifact, twice,
+# alternating, so run-to-run noise is visible next to the difference.
+#
+# A benchmark lives here rather than on a developer machine on purpose: the
+# owner's desktop runs no suites, builds or benchmarks.
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: Ref to compare against
+        default: v0.10.0
+      mib:
+        description: MiB pushed through one pty
+        default: "100"
+  push:
+    branches: [main]
+    paths:
+      - "bench/**"
+      - "src/scrollback.ts"
+      - "src/manager.ts"
+      - "src/host-client.ts"
+      - "src/pty-host.ts"
+      - ".github/workflows/bench.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    env:
+      BASELINE: ${{ inputs.baseline || 'v0.10.0' }}
+      MIB: ${{ inputs.mib || '100' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check out the baseline
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.BASELINE }}
+          path: .bench-baseline
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Build this commit
+        run: npm ci --no-audit --no-fund && npm run build
+
+      - name: Build the baseline
+        working-directory: .bench-baseline
+        run: npm ci --no-audit --no-fund && npm run build
+
+      - name: Bench (alternating, two rounds per chunk size)
+        run: |
+          set -e
+          : > bench.jsonl
+          for chunk in 4096 1024; do
+            for round in 1 2; do
+              node --expose-gc bench/scrollback.mjs .bench-baseline/dist --mb "$MIB" --chunk "$chunk" --label "baseline:$BASELINE" >> bench.jsonl
+              node --expose-gc bench/scrollback.mjs dist --mb "$MIB" --chunk "$chunk" --label "head:${GITHUB_SHA::7}" >> bench.jsonl
+            done
+          done
+          cat bench.jsonl
+          {
+            echo "### Scrollback bench: ${MIB} MiB through one pty"
+            echo
+            echo "| build | chunk | CPU ms (user+sys) | wall ms | peak heap MiB | max RSS MiB | ok |"
+            echo "|---|---|---|---|---|---|---|"
+            node -e "for (const l of require('fs').readFileSync('bench.jsonl','utf8').trim().split(/\r?\n/)) { const r = JSON.parse(l); console.log('| ' + [r.label, r.chunk, r.cpuTotalMs, r.wallMs, r.peakHeapMiB, r.maxRssMiB, r.ok].join(' | ') + ' |'); }"
+          } >> "$GITHUB_STEP_SUMMARY"
