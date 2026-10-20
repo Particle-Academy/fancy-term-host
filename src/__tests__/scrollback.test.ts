@@ -273,6 +273,11 @@ describe('scrollbackMax — HostClient', () => {
     it('forwards scrollbackMax to the host and trims the mirror to it', async () => {
         await connect();
         client!.create({ id: 'c', cwd: '/tmp', scrollbackMax: 5 });
+        // The create request is fire-and-forget; wait for the host to see it
+        // rather than racing the assertion below against the socket.
+        for (let i = 0; i < 200 && !received.some((m) => m.kind === 'create'); i++) {
+            await new Promise((r) => setTimeout(r, 10));
+        }
         const got = new Promise<void>((r) => client!.once('data', () => r()));
         for (const s of sockets) s.write(encodeFrame({ kind: 'data', id: 'c', data: '0123456789' } as HostMessage));
         await got;
