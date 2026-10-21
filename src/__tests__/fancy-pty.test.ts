@@ -191,6 +191,31 @@ describe('UTF-8 decoding across chunk boundaries', () => {
         expect(events[1]).toMatch(/^data:/);
         expect(events[2]).toBe('exit:0');
     });
+
+    it('still announces the exit when a data listener throws on that final flush', () => {
+        // The flush runs data listeners INSIDE the exit callback. Before
+        // 0.11.1 a throw there skipped every exit listener, so the backend
+        // never unlisted the pty and never emitted `exit` -- a lost exit with
+        // the process long gone. The throw itself must still surface.
+        const f = fakePty();
+        const pty = createFancyPtySpawn(f.open)('sh', [], {});
+        const exits: number[] = [];
+        pty.onData(() => {
+            throw new Error('listener fault');
+        });
+        pty.onExit((e) => exits.push(e.exitCode));
+
+        f.emitData(Buffer.from([0xc3])); // orphaned lead byte: the exit must flush it
+        let err: unknown;
+        try {
+            f.emitExit(0);
+        } catch (e) {
+            err = e;
+        }
+
+        expect(exits).toEqual([0]);
+        expect(String(err)).toContain('listener fault');
+    });
 });
 
 describe('exit shape', () => {

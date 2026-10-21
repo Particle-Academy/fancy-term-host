@@ -137,13 +137,22 @@ export function createFancyPtySpawn(open: FancyPtyOpen) {
             // exit: a shell whose final output ends mid-sequence would
             // otherwise lose its last character, and the exit handler upstream
             // tears the scrollback down.
-            const tail = decoder.end();
-            if (tail.length > 0) {
-                for (const fn of dataListeners) fn(tail);
-            }
-            // The shell convention fancy-pty reports with: 128 + signal.
+            //
+            // The flush runs data listeners inside this exit callback, so it is
+            // in a `try` whose `finally` announces the exit: through 0.11.0 a
+            // throwing data listener here skipped every exit listener, and the
+            // backend kept a finished pty listed forever. The throw still
+            // propagates to fancy-pty, which reports it, after the exit.
             const signal = code > 128 && code < 160 ? code - 128 : undefined;
-            for (const fn of exitListeners) fn({ exitCode: code, signal });
+            try {
+                const tail = decoder.end();
+                if (tail.length > 0) {
+                    for (const fn of dataListeners) fn(tail);
+                }
+            } finally {
+                // The shell convention fancy-pty reports with: 128 + signal.
+                for (const fn of exitListeners) fn({ exitCode: code, signal });
+            }
         });
 
         // fancy-pty reports faults node-pty had no channel for — a spawn that

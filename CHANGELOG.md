@@ -15,6 +15,46 @@ upgrading.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-21
+
+**An exit can no longer be lost to a throwing listener, or clobber a reused
+id.** Nothing to do on upgrade: no API, protocol or dependency change, and every
+exit that 0.11.0 delivered is delivered the same way. Install it if you saw a
+terminal that finished but stayed listed and never fired `exit`. The sign of that
+case is a process warning reading `fancy-pty: a 'exit' listener threw: ...`.
+
+### Fixed
+
+- **A finished pty stayed listed forever, and its `exit` never fired, if a
+  listener threw inside the exit path.** On exit the in-process backend flushes
+  the pty's last cwd as a synchronous `cwd` event, and through 0.11.0 the
+  bookkeeping (`list()`, `isLive`, the scrollback) and the `exit` emit came
+  AFTER it. A `cwd` listener that threw, such as an adapter persisting the cwd to
+  a database, skipped both. fancy-pty catches a throwing exit listener and
+  reports it only as a process warning, so nothing crashed and nothing
+  announced the exit. The same applied to a `data` listener that threw on the
+  decoder's final flush (`src/fancy-pty.ts`), which runs inside the exit
+  callback. Both now run under `try`/`finally`: the pty is unlisted and `exit` is
+  emitted first, then the listener's error still propagates and is still
+  reported. `kill()` had the same shape for its cleanup and is fixed the same
+  way. 0.10.0 had this too; it is not new in 0.11.0. Matches the symptom in
+  Genie's Windows leak check for beta.34 ("the pty never reported its exit",
+  host count 1, no live processes). That match is not a confirmed cause; see
+  `bench/exit-stress.mjs`.
+- **A late exit from a killed pty no longer clobbers a new pty created with the
+  same id** (listed as "known, not fixed" in 0.11.0's AGENTS.md). The old pty's
+  `onExit` deleted the replacement's entries by id and emitted an `exit` for it.
+  An exit from a pty that is no longer the registered one is now ignored. A
+  killed pty that was NOT replaced still emits its `exit` as before, so a
+  consumer that kills and then waits for `exit` is unaffected.
+
+### Added
+
+- **`bench/exit-stress.mjs`**: opens N real ptys through the in-process backend
+  (argv, typed or type-ahead commands; any shell), waits for each exit with a
+  timeout, and reports lost exits, the live count afterwards and any process
+  warnings. `--from <dir>` runs it against the install in a consumer's tree.
+
 ## [0.11.0] - 2026-10-20
 
 **Scrollback without an O(n) copy per chunk** (Genie F5, 2.0.0-beta.33). Nothing

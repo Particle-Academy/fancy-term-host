@@ -33,13 +33,16 @@ T1/T2/T3 persistence engine. `CLAUDE.md` symlinks here. This file describes
 - **`scrollbackMax` is per pty and fixed at spawn.** It defaults to 1,000,000,
   and `0` keeps nothing. It travels to the host as an optional protocol field, so
   an older host ignores it.
-
-## Known, not fixed
-
-- **A late exit can clobber a reused id.** If a pty is killed and a new one is
-  created with the same id, the old pty's exit handler deletes the new one's
-  entries by id. Genie never reuses ids, so it is not urgent. The fix is to
-  ignore an exit whose pty instance is no longer the registered one.
+- **An exit is always delivered.** In `InProcessBackend`'s `onExit`, the
+  bookkeeping and the `exit` emit sit in a `finally` behind the synchronous
+  `cwd` flush. The adapter's final decoder flush in `src/fancy-pty.ts` sits the
+  same way in front of the exit listeners. A listener that throws there must
+  not cost the exit: fancy-pty swallows a throwing exit listener into a process
+  warning, so a lost exit is otherwise silent (0.11.1,
+  `src/__tests__/exit-delivery.test.ts`).
+- **An exit from a pty that is no longer the registered one is ignored**, so a
+  killed-and-replaced id is not clobbered. A killed pty that was not replaced
+  still emits `exit`.
 
 ## Checking a change
 
@@ -47,3 +50,7 @@ T1/T2/T3 persistence engine. `CLAUDE.md` symlinks here. This file describes
 scrollback benchmark is `node --expose-gc bench/scrollback.mjs <distDir> --mb
 100 --chunk 4096`, also run in `.github/workflows/bench.yml`. Only compare
 numbers from the same run: the same build varied 8.5-13 s across CI runners.
+
+Lost-exit stress with REAL ptys: `node bench/exit-stress.mjs [--from <dir>]
+--n 120 --runs 5 [--mode argv|typed|typednow] [--shell <exe>]`. It exits 1 on
+any lost exit, any pty still listed afterwards, or any process warning.

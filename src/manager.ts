@@ -228,10 +228,10 @@ class InProcessBackend extends EventEmitter implements PtyBackend {
         pty.onData((data) => {
             // Looked up by id on every chunk, NOT captured in this closure, and
             // re-created when missing -- exactly as 0.10.0 did (`get(id) ?? ''`).
-            // That matters in a race: after kill() and a recreate of the same
-            // id, the OLD pty's late onExit deletes this map entry by id. With a
-            // captured buffer the NEW live pty would keep writing into one
-            // nobody can read; looked up, its next chunk starts a fresh one.
+            // Through 0.11.0 a replaced pty's late onExit deleted this entry by
+            // id; since 0.11.1 onExit ignores a pty that is no longer the
+            // registered one, but the lookup stays the safe shape: a buffer
+            // captured here could outlive the map entry it was read from.
             let scrollback = this.scrollback.get(opts.id);
             if (!scrollback) {
                 scrollback = new Scrollback(cap);
@@ -253,13 +253,28 @@ class InProcessBackend extends EventEmitter implements PtyBackend {
             this.emit('data', opts.id, data);
         });
         pty.onExit(({ exitCode, signal }) => {
-            this.cleanupCwd(opts.id);
-            this.ptys.delete(opts.id);
-            this.scrollback.delete(opts.id);
-            this.shells.delete(opts.id);
-            // A dead pty can't be retained — drop the flag so the cap frees up.
-            this.retained.delete(opts.id);
-            this.emit('exit', opts.id, { exitCode, signal });
+            // A pty that is no longer the registered one for this id was killed
+            // and REPLACED (same id, new pty). Its late exit must not unlist the
+            // replacement or announce an exit for it -- through 0.11.0 it did
+            // both, by id. A killed pty that was NOT replaced still announces
+            // its exit (its entries are already gone), as before.
+            const current = this.ptys.get(opts.id);
+            if (current !== undefined && current !== pty) return;
+            // Bookkeeping and the `exit` emit run even if a listener throws:
+            // the cwd flush emits `cwd` synchronously, and through 0.11.0 a
+            // throwing `cwd` listener skipped everything after it, leaving a
+            // finished pty listed and never announced. The throw still
+            // propagates (fancy-pty reports it) once the exit is delivered.
+            try {
+                this.cleanupCwd(opts.id);
+            } finally {
+                this.ptys.delete(opts.id);
+                this.scrollback.delete(opts.id);
+                this.shells.delete(opts.id);
+                // A dead pty can't be retained — drop the flag so the cap frees up.
+                this.retained.delete(opts.id);
+                this.emit('exit', opts.id, { exitCode, signal });
+            }
         });
 
         // Cold spawn: surface any previous-session snapshot so the renderer can
@@ -330,12 +345,16 @@ class InProcessBackend extends EventEmitter implements PtyBackend {
         } catch {
             /* already exited */
         }
-        this.cleanupCwd(id);
-        this.ptys.delete(id);
-        this.scrollback.delete(id);
-        this.shells.delete(id);
-        // An explicit kill (delete) also clears any retained flag.
-        this.retained.delete(id);
+        try {
+            this.cleanupCwd(id);
+        } finally {
+            // Unlisted even if a `cwd` listener throws (see onExit).
+            this.ptys.delete(id);
+            this.scrollback.delete(id);
+            this.shells.delete(id);
+            // An explicit kill (delete) also clears any retained flag.
+            this.retained.delete(id);
+        }
         return true;
     }
 
