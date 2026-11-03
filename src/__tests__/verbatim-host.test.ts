@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -20,6 +21,7 @@ const spawned = vi.hoisted(() => [] as Array<{ file: string; args: string[] | st
 
 vi.mock('node-pty', () => ({
     spawn: (file: string, args: string[] | string) => {
+        if (file === 'fth-spawn-throws') throw new Error('the engine refused this');
         spawned.push({ file, args });
         return { pid: 77, onData() {}, onExit() {}, write() {}, resize() {}, kill() {} };
     },
@@ -43,6 +45,15 @@ const ARGS = ['/d', '/s', '/c', `"${LINE}"`];
 /** Inside the repo, not the temp directory, and gitignored. */
 const userData = path.resolve(__dirname, '..', '..', '.tmp-verbatim-host', String(process.pid));
 
+/**
+ * The default Windows pipe is machine-wide and belongs to whatever real host an app
+ * on this machine is running. This suite IS a host, so it takes a pipe of its own
+ * before the module is imported, and checks that it did. `userHash` asks os.hostname
+ * on every call, so the client below sees the same name.
+ */
+const defaultSocket = socketPathFor(userData);
+os.hostname = () => `fth-test-verbatim-host-${process.pid}`;
+
 let client: HostClient;
 
 async function nextSpawn(): Promise<{ file: string; args: string[] | string }> {
@@ -54,6 +65,7 @@ async function nextSpawn(): Promise<{ file: string; args: string[] | string }> {
 }
 
 beforeAll(async () => {
+    if (realPlatform === 'win32') expect(socketPathFor(userData)).not.toBe(defaultSocket);
     fs.mkdirSync(userData, { recursive: true });
     process.env.GENIE_USERDATA = userData;
     // The module IS the host: importing it starts the server and writes the pidfile.
@@ -100,13 +112,33 @@ describe('the real pty-host', () => {
         expect((await nextSpawn()).args).toEqual(['-c', 'true']);
     });
 
-    it('refuses a non-boolean sent straight to the socket, spawning nothing', async () => {
+    it('answers a create the engine throws on, and leaves the id free', async () => {
+        const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const heard: Array<[string, string]> = [];
+        client.on('create-error', (id: string, e: { message: string }) => heard.push([id, e.message]));
+        client.create({ id: 'throws', cwd: userData, shell: 'fth-spawn-throws' });
+        await vi.waitFor(() => expect(heard).toEqual([['throws', 'the engine refused this']]), { timeout: 3000 });
+        expect(client.isLive('throws')).toBe(false);
+        logged.mockRestore();
+
+        client.create({ id: 'throws', cwd: userData, shell: 'cmd.exe' });
+        await nextSpawn();
+        expect(client.isLive('throws')).toBe(true);
+    });
+
+    it('refuses a non-boolean sent straight to the socket, spawning nothing, and says so', async () => {
         const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
         const sock = net.createConnection(socketPathFor(userData));
         const dec = new FrameDecoder();
-        const pong = new Promise<void>((resolve) => {
+        let failed: { message?: string } | undefined;
+        const answered = new Promise<void>((resolve) => {
             sock.on('data', (b: Buffer) => {
-                for (const f of dec.push(b)) if ((f as { kind: string }).kind === 'pong') resolve();
+                for (const f of dec.push(b)) {
+                    if ((f as { kind: string }).kind === 'create-failed') {
+                        failed = f as { message?: string };
+                        resolve();
+                    }
+                }
             });
         });
         await new Promise<void>((r) => sock.once('connect', () => r()));
@@ -123,15 +155,10 @@ describe('the real pty-host', () => {
                 },
             }),
         );
-        sock.write(encodeFrame({ kind: 'ping', seq: 2 }));
-        await pong;
-        // The create is async, so give its rejection a turn to land.
-        for (let i = 0; i < 100 && logged.mock.calls.length === 0; i++) {
-            await new Promise((r) => setTimeout(r, 10));
-        }
+        await answered;
         sock.destroy();
         expect(spawned).toEqual([]);
-        expect(String(logged.mock.calls[0]?.[1])).toMatch(/windowsVerbatimArguments/);
+        expect(failed?.message).toMatch(/windowsVerbatimArguments/);
         logged.mockRestore();
     });
 

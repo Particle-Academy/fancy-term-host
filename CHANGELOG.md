@@ -15,6 +15,28 @@ upgrading.
 
 ## [Unreleased]
 
+### Added
+
+- **A `create-error` event on `HostClient`, and `onCreateError` on
+  `subscribeBackendEvents`,** carrying `(id, { message })`. See Fixed.
+  **What you must DO:** nothing, unless you want the reason as a value.
+
+### Fixed
+
+- **A failed `create` on the detached host hung forever, silently.** If the spawn
+  failed, the host logged it and answered nothing, and the client swallowed the
+  timeout. The caller was left with a terminal listed at pid 0 that accepted writes
+  and never fired `exit`. Now the host answers with `create-failed` (additive, so
+  `PROTOCOL_VERSION` stays 2), and the client removes the terminal, emits
+  `create-error`, then emits the reason as `data`, then `exit` with code 1. A host
+  that never answers, which includes one still running from an older release, gets
+  the same at the request timeout (10 seconds by default), and is told to kill the
+  id in case the terminal starts late.
+
+  `create()` still returns normally, because it returns before the host has
+  answered. **What you must DO:** nothing. An app wired to `data` and `exit` now
+  shows the reason and closes the terminal.
+
 ## [0.12.0] - 2026-11-02
 
 ### Added

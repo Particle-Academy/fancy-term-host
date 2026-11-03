@@ -8,8 +8,9 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
+const PRIVATE_PIPE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'private-pipe.cjs');
 const spec = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const mod = await import(pathToFileURL(path.join(spec.dist, 'index.js')).href);
 
@@ -37,11 +38,19 @@ try {
                 resolveHostScript: () => path.join(spec.dist, 'pty-host.js'),
                 // Not `detached`: the driver ends the host itself, and a hidden
                 // child of a hidden process can never open a window.
+                //
+                // The preload gives it a pipe of its own, because the default
+                // Windows pipe is machine-wide and belongs to whatever real host
+                // an app on this machine is running.
                 spawnDetached: (script, env) => {
-                    hostProcess = spawn(process.execPath, [script], {
+                    hostProcess = spawn(process.execPath, ['--require', PRIVATE_PIPE, script], {
                         stdio: 'ignore',
                         windowsHide: true,
-                        env: { ...process.env, ...env },
+                        env: {
+                            ...process.env,
+                            ...env,
+                            FTH_TEST_PIPE_TAG: `verbatim-${process.pid}`,
+                        },
                     });
                 },
             },
@@ -49,6 +58,10 @@ try {
         const init = await mod.initTerminalBackend();
         hostBacked = init.host;
         if (!hostBacked) throw new Error(`no detached host: ${result.hostStatus}`);
+        const pf = mod.readPidfile(spec.userData);
+        if (process.platform === 'win32' && pf?.socketPath === mod.socketPathFor(spec.userData)) {
+            throw new Error('the test host is on the machine-wide default pipe');
+        }
     } else {
         mod.configureInProcessBackend({ settings: { get: () => undefined }, snapshots });
     }

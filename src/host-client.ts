@@ -212,6 +212,13 @@ export class HostClient extends EventEmitter implements PtyBackend {
     }
 
     private handleHostMessage(msg: HostMessage): void {
+        // A create the host accepted and the engine then could not start. With no
+        // seq there is no request to answer: the pty's own data and exit follow,
+        // so this only says why. With a seq it is a reply, handled below.
+        if (msg.kind === 'create-failed' && msg.seq === undefined) {
+            if (this.mirror.has(msg.id)) this.emit('create-error', msg.id, { message: msg.message });
+            return;
+        }
         switch (msg.kind) {
             case 'data': {
                 const entry = this.mirror.get(msg.id);
@@ -376,6 +383,15 @@ export class HostClient extends EventEmitter implements PtyBackend {
     }
 
     /**
+     * The pty engine the connected host runs. A host is not replaced on upgrade, so
+     * after one this can still be `node-pty`: `shutdownHost()` ends it, and its
+     * terminals, and the next host started runs the current code.
+     */
+    hostEngine(): 'fancy-pty' | 'node-pty' {
+        return this.hostCapabilities.includes('fancy-pty') ? 'fancy-pty' : 'node-pty';
+    }
+
+    /**
      * Gracefully shut the host DOWN — the deliberate counterpart to
      * `disconnect()` (which leaves the host running). Asks the host to kill its
      * ptys, remove its pidfile/socket, and exit cleanly, then drops the local
@@ -458,13 +474,18 @@ export class HostClient extends EventEmitter implements PtyBackend {
         // Cold create: seed the mirror immediately (pid 0 until the host echoes
         // the real one), fire the create request, and surface any on-disk
         // snapshot exactly like the in-process backend does on a cold spawn.
-        this.mirror.set(opts.id, {
+        const seeded: MirrorEntry = {
             pid: 0,
             shell: opts.shell ?? '',
             scrollback: new Scrollback(opts.scrollbackMax),
-        });
+        };
+        this.mirror.set(opts.id, seeded);
         this.request({ kind: 'create', seq: this.nextSeq(), opts })
             .then((reply) => {
+                if (reply.kind === 'create-failed') {
+                    this.failCreate(opts.id, seeded, reply.message);
+                    return;
+                }
                 if (reply.kind !== 'created') return;
                 const entry = this.mirror.get(opts.id);
                 if (entry) {
@@ -472,8 +493,15 @@ export class HostClient extends EventEmitter implements PtyBackend {
                     entry.shell = reply.result.shell;
                 }
             })
-            .catch(() => {
-                /* connection error surfaces via the error event → fallback */
+            .catch((err: Error) => {
+                // A lost connection is already on its way to the error event and
+                // the fallback, and says more than one failed create per terminal.
+                if (!this.connected || this.mirror.get(opts.id) !== seeded) return;
+                // No answer in time: a wedged host, or one older than 0.13.0, whose
+                // failed spawn sends nothing. If it does start over there after all,
+                // it must not keep running with nothing here that lists it.
+                this.send({ kind: 'kill', id: opts.id });
+                this.failCreate(opts.id, seeded, err.message);
             });
         const snap = this.snapshots.readSnapshot(opts.id);
         return {
@@ -484,6 +512,30 @@ export class HostClient extends EventEmitter implements PtyBackend {
             scrollback: '',
             snapshot: snap ?? undefined,
         };
+    }
+
+    /**
+     * End a create the host could not carry out. `create()` already returned, so
+     * this is reported the way the host reports everything else: `create-error`
+     * for whoever wants the reason, and the reason in `data` followed by `exit` for
+     * an app wired only to those two, for which a terminal that closes with no
+     * words is the failure this replaces. Ignored if `seeded` is no longer the
+     * entry for this id: it was killed, and maybe replaced, in the meantime.
+     */
+    private failCreate(id: string, seeded: MirrorEntry, message: string): void {
+        if (this.mirror.get(id) !== seeded) return;
+        this.mirror.delete(id);
+        this.retained.delete(id);
+        // Nested, so a listener that throws cannot cost the exit.
+        try {
+            this.emit('create-error', id, { message });
+        } finally {
+            try {
+                this.emit('data', id, `\r\n[fancy-term-host] could not start the terminal: ${message}\r\n`);
+            } finally {
+                this.emit('exit', id, { exitCode: 1 });
+            }
+        }
     }
 
     write(id: string, data: string): boolean {

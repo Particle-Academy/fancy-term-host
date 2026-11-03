@@ -91,6 +91,20 @@ export type HostMessage =
           terminals: Array<{ id: string; pid: number; shell: string }>;
       }
     | { kind: 'scrollback-result'; seq: number; scrollback: string | null }
+    | {
+          kind: 'create-failed';
+          /**
+           * Present when this answers the `create`: nothing was started. Absent when
+           * it is pushed for a pty the engine accepted and could not start, whose
+           * `data` and `exit` follow as usual.
+           *
+           * Additive. A host older than 0.13.0 never sends it (a failed create got no
+           * answer at all), and a client older than that ignores it.
+           */
+          seq?: number;
+          id: string;
+          message: string;
+      }
     | { kind: 'pong'; seq: number }
     | { kind: 'shutdown-ok'; seq: number }
     | { kind: 'data'; id: string; data: string }

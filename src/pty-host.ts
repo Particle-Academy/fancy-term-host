@@ -208,7 +208,17 @@ async function handleClientMessage(sock: net.Socket, msg: ClientMessage): Promis
             });
             break;
         case 'create': {
-            const r = await createPty(msg.opts);
+            let r: Awaited<ReturnType<typeof createPty>>;
+            try {
+                r = await createPty(msg.opts);
+            } catch (err) {
+                // Through 0.12.0 this was only logged, to a stderr nobody reads, and
+                // the client was left holding a terminal at pid 0 that never exits.
+                const message = err instanceof Error ? err.message : String(err);
+                console.error('[pty-host] create failed:', message);
+                reply(sock, { kind: 'create-failed', seq: msg.seq, id: msg.opts.id, message });
+                break;
+            }
             reply(sock, {
                 kind: 'created',
                 seq: msg.seq,

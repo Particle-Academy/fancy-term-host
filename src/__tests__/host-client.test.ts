@@ -50,6 +50,10 @@ interface MockHostOptions {
     helloVersion?: number;
     /** When set, the host ACKs shutdown but never closes the socket (timeout test). */
     shutdownNoClose?: boolean;
+    /** Replace the answer to `create`. Null answers nothing, as a host before 0.13.0 did. */
+    createReply?: (msg: Extract<ClientMessage, { kind: 'create' }>) => HostMessage | null;
+    /** What hello-ok advertises. */
+    capabilities?: string[];
 }
 
 /** A minimal protocol-speaking server. Returns control handles for the test. */
@@ -92,6 +96,7 @@ function startMockHost(socketPath: string, opts: MockHostOptions = {}) {
                     seq: msg.seq,
                     protocolVersion: opts.helloVersion ?? PROTOCOL_VERSION,
                     pid: 9999,
+                    ...(opts.capabilities ? { capabilities: opts.capabilities } : {}),
                 });
                 break;
             case 'list':
@@ -113,6 +118,11 @@ function startMockHost(socketPath: string, opts: MockHostOptions = {}) {
                 });
                 break;
             case 'create':
+                if (opts.createReply) {
+                    const r = opts.createReply(msg);
+                    if (r) send(sock, r);
+                    break;
+                }
                 send(sock, {
                     kind: 'created',
                     seq: msg.seq,
@@ -406,5 +416,176 @@ describe('liveness — a hung host is detectable', () => {
 
         await expect(client.shutdownHost(400)).resolves.toBeUndefined();
         expect(client.isConnected()).toBe(false);
+    });
+});
+
+/**
+ * A create the host could not carry out. Through 0.12.0 the host answered nothing,
+ * the client swallowed the timeout, and the caller was left with a terminal listed
+ * at pid 0 that accepted writes and never fired `exit`.
+ */
+describe('HostClient: a create that fails', () => {
+    /** Everything a consumer can hear, in order. */
+    function listen(c: HostClient) {
+        const heard: Array<[string, unknown]> = [];
+        c.on('create-error', (id: string, e: { message: string }) => heard.push(['create-error', [id, e.message]]));
+        c.on('data', (id: string, d: string) => heard.push(['data', [id, d]]));
+        c.on('exit', (id: string, e: { exitCode: number }) => heard.push(['exit', [id, e.exitCode]]));
+        return heard;
+    }
+    const settled = (fn: () => boolean) => vi.waitFor(() => expect(fn()).toBe(true), { timeout: 2000 });
+
+    it('a refusal from the host reaches the caller, in the data too, and leaves nothing listed', async () => {
+        host = startMockHost(socketPath, {
+            createReply: (m) => ({ kind: 'create-failed', seq: m.seq, id: m.opts.id, message: 'refused: no' }),
+        });
+        await host.listen();
+        client = await HostClient.connect(socketPath, noSnapshots, 2000);
+        const heard = listen(client);
+
+        client.setRetained('t', true);
+        client.create({ id: 't', cwd: '.', shell: 'x' });
+        await settled(() => heard.length === 3);
+
+        expect(heard[0]).toEqual(['create-error', ['t', 'refused: no']]);
+        // An app wired only to `data` and `exit` has no other way to see why.
+        expect(heard[1][0]).toBe('data');
+        expect((heard[1][1] as string[])[1]).toContain('refused: no');
+        expect(heard[2]).toEqual(['exit', ['t', 1]]);
+
+        expect(client.list()).toEqual([]);
+        expect(client.isLive('t')).toBe(false);
+        expect(client.write('t', 'x')).toBe(false);
+        expect(client.isRetained('t')).toBe(false);
+    });
+
+    it('a listener that throws does not cost the exit', async () => {
+        host = startMockHost(socketPath, {
+            createReply: (m) => ({ kind: 'create-failed', seq: m.seq, id: m.opts.id, message: 'no' }),
+        });
+        await host.listen();
+        client = await HostClient.connect(socketPath, noSnapshots, 2000);
+        const exits: string[] = [];
+        client.on('exit', (id: string) => exits.push(id));
+        client.on('create-error', () => {
+            throw new Error('a listener broke');
+        });
+
+        client.create({ id: 't', cwd: '.', shell: 'x' });
+        await settled(() => exits.length === 1);
+        expect(client.isLive('t')).toBe(false);
+    });
+
+    it('a pushed failure, from a pty that started and then could not, reports without ending it twice', async () => {
+        host = startMockHost(socketPath);
+        await host.listen();
+        client = await HostClient.connect(socketPath, noSnapshots, 2000);
+        const heard = listen(client);
+
+        client.create({ id: 't', cwd: '.', shell: 'x' });
+        await settled(() => client!.list()[0]?.pid === 1234);
+        host.push({ kind: 'create-failed', id: 't', message: 'program not found' });
+        host.push({ kind: 'data', id: 't', data: '[fancy-pty] program not found' });
+        host.push({ kind: 'exit', id: 't', exitCode: 1 });
+        await settled(() => heard.length === 3);
+
+        expect(heard.map((h) => h[0])).toEqual(['create-error', 'data', 'exit']);
+        expect(heard[0][1]).toEqual(['t', 'program not found']);
+        expect(client.list()).toEqual([]);
+    });
+
+    it('a host that never answers, as one before this release does, fails the create at the timeout', async () => {
+        host = startMockHost(socketPath, { createReply: () => null });
+        await host.listen();
+        client = await HostClient.connect(socketPath, noSnapshots, 2000, {
+            requestTimeoutMs: 150,
+            heartbeatIntervalMs: 0,
+        });
+        const heard = listen(client);
+
+        client.create({ id: 't', cwd: '.', shell: 'x' });
+        expect(client.isLive('t'), 'control: listed while the create is in flight').toBe(true);
+        await settled(() => heard.length === 3);
+
+        expect(heard[0][0]).toBe('create-error');
+        expect((heard[0][1] as string[])[1]).toMatch(/timed out/);
+        expect(heard[2]).toEqual(['exit', ['t', 1]]);
+        expect(client.list()).toEqual([]);
+        // It may yet start over there, so it is told to stop rather than left running unlisted.
+        await settled(() => host.received.some((m) => m.kind === 'kill' && m.id === 't'));
+    });
+
+    it('a late failure does not touch a terminal since replaced under the same id', async () => {
+        const replies: Array<Extract<ClientMessage, { kind: 'create' }>> = [];
+        host = startMockHost(socketPath, {
+            createReply: (m) => {
+                replies.push(m);
+                return replies.length === 1
+                    ? null
+                    : {
+                          kind: 'created',
+                          seq: m.seq,
+                          result: { id: m.opts.id, pid: 55, shell: 'x', existing: false, scrollback: '' },
+                      };
+            },
+        });
+        await host.listen();
+        client = await HostClient.connect(socketPath, noSnapshots, 2000, {
+            requestTimeoutMs: 200,
+            heartbeatIntervalMs: 0,
+        });
+        const heard = listen(client);
+
+        client.create({ id: 't', cwd: '.', shell: 'x' });
+        client.kill('t');
+        client.create({ id: 't', cwd: '.', shell: 'x' });
+        await settled(() => client!.list()[0]?.pid === 55);
+        await new Promise((r) => setTimeout(r, 300)); // Past the first one's timeout.
+
+        expect(heard).toEqual([]);
+        expect(client.isLive('t')).toBe(true);
+    });
+
+    it('losing the connection stays a connection error, not one create error per terminal', async () => {
+        host = startMockHost(socketPath, { createReply: () => null });
+        await host.listen();
+        client = await HostClient.connect(socketPath, noSnapshots, 2000, {
+            requestTimeoutMs: 5000,
+            heartbeatIntervalMs: 0,
+        });
+        const heard = listen(client);
+        const errors: Error[] = [];
+        client.on('error', (e: Error) => errors.push(e));
+
+        client.create({ id: 't', cwd: '.', shell: 'x' });
+        await host.close();
+        await settled(() => errors.length === 1);
+        await new Promise((r) => setTimeout(r, 50));
+
+        expect(heard).toEqual([]);
+    });
+});
+
+describe('HostClient: which engine the running host is on', () => {
+    it('reads a host that advertises fancy-pty', async () => {
+        host = startMockHost(socketPath, { capabilities: ['windowsVerbatimArguments', 'fancy-pty'] });
+        await host.listen();
+        client = await HostClient.connect(socketPath, noSnapshots, 2000);
+        expect(client.hostEngine()).toBe('fancy-pty');
+    });
+
+    it('reads a host from before the move as node-pty, including one that sends no list', async () => {
+        host = startMockHost(socketPath, { capabilities: ['windowsVerbatimArguments'] });
+        await host.listen();
+        client = await HostClient.connect(socketPath, noSnapshots, 2000);
+        expect(client.hostEngine()).toBe('node-pty');
+        client.disconnect();
+        await host.close();
+
+        socketPath = ephemeralPath();
+        host = startMockHost(socketPath);
+        await host.listen();
+        client = await HostClient.connect(socketPath, noSnapshots, 2000);
+        expect(client.hostEngine()).toBe('node-pty');
     });
 });

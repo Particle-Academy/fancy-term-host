@@ -490,6 +490,8 @@ export function terminalManager(): PtyBackend {
 interface BackendEventHandlers {
     onData: (id: string, data: string) => void;
     onExit: (id: string, payload: { exitCode: number; signal?: number }) => void;
+    /** Optional. See `create-error` on PtyBackend. */
+    onCreateError?: (id: string, error: { message: string }) => void;
 }
 let eventHandlers: BackendEventHandlers | null = null;
 /** Backends already wired to the fan-out, so a fallback back to a previously
@@ -502,6 +504,7 @@ function bindEvents(backend: PtyBackend): void {
     boundBackends.add(backend);
     backend.on('data', eventHandlers.onData);
     backend.on('exit', eventHandlers.onExit);
+    if (eventHandlers.onCreateError) backend.on('create-error', eventHandlers.onCreateError);
 }
 
 /**

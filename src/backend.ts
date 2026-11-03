@@ -61,6 +61,16 @@ export interface PtyBackend {
      * and the client doesn't observe OSC-7), so a no-op subscription is harmless.
      */
     on(event: 'cwd', listener: (id: string, cwd: string) => void): this;
+    /**
+     * Why a create failed, on the detached host only. Its `create()` returns before
+     * the host has answered, so a refusal or a failed spawn cannot be a throw there.
+     * `data` carrying the same words and then `exit` always follow, so an app wired
+     * only to those still shows it and still closes the terminal.
+     *
+     * The in-process backend does not emit it: a refusal throws from `create()`, and
+     * a program that cannot be found arrives as `data` and `exit`.
+     */
+    on(event: 'create-error', listener: (id: string, error: { message: string }) => void): this;
 }
 
 /**
