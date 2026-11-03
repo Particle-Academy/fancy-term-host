@@ -1,11 +1,17 @@
 /**
  * electron-builder `afterPack` helper (Tier 0 — packaging).
  *
- * fancy-term-host wraps `node-pty`, a NATIVE addon. `electron-builder`
- * (via `install-app-deps`) rebuilds it, but the rebuild output is left
- * unusable per-OS, so a standard packaged app spawns NO terminal until each
- * consumer discovers + patches it. This helper performs the three known fixes
- * in one call so consumers don't have to hand-roll them (#7):
+ * fancy-term-host's own engine is `fancy-pty`, a helper executable with nothing to
+ * rebuild. What can still be wrong is where it landed: a file inside an asar has no
+ * path the OS can execute. So this checks the helper for the target platform and
+ * arch is on disk, IN PLACE, and never moves it. Running it from anywhere else, a
+ * temp directory above all, hides it from an updater's sweep of the install folder;
+ * see fancy-pty's "the helper resolves in place".
+ *
+ * A consumer can still inject `node-pty` as the in-process engine, from their own
+ * dependencies. If one is in the packed app, its three known breakages are fixed as
+ * they always were (#7), because `electron-builder` (via `install-app-deps`) leaves
+ * its rebuild output unusable per-OS:
  *
  *   • **Windows** — node-pty's `conpty.node` `LoadLibrary`s a `conpty.dll` from a
  *     `build/Release/conpty/` SUBDIR that the rebuild doesn't create; the dll +
@@ -51,8 +57,10 @@ export interface AfterPackContext {
 export interface AfterPackOptions {
     /** Override the platform (defaults to `context.electronPlatformName`). */
     platform?: string;
-    /** Explicit node-pty package dir; skips the search under `appOutDir`. */
+    /** Explicit node-pty package dir, if you ship one; skips the search under `appOutDir`. */
     nodePtyDir?: string;
+    /** Explicit fancy-pty package dir; skips the search under `appOutDir`. */
+    fancyPtyDir?: string;
     /**
      * Override the target arch name (`'x64'`, `'arm64'`, `'ia32'`, …) used to
      * select the Windows `conpty` prebuild. Defaults to `context.arch`.
@@ -159,6 +167,82 @@ export function resolveNodePtyDir(
     return null;
 }
 
+const FANCY_PTY_PATH = path.join('node_modules', '@particle-academy', 'fancy-pty');
+const TERM_HOST_PATH = path.join('node_modules', '@particle-academy', 'fancy-term-host');
+const UNPACK_GLOB = '**/node_modules/@particle-academy/fancy-pty/**';
+
+/** Locate the packaged fancy-pty dir under `appOutDir`, or null. */
+export function resolveFancyPtyDir(
+    appOutDir: string,
+    platform: string,
+    io: AfterPackIo,
+): string | null {
+    for (const res of resourcesDirs(appOutDir, platform, io)) {
+        for (const dir of [
+            path.join(res, 'app.asar.unpacked', FANCY_PTY_PATH),
+            path.join(res, 'app', FANCY_PTY_PATH),
+        ]) {
+            if (io.exists(dir)) return dir;
+        }
+    }
+    return null;
+}
+
+/**
+ * Is the helper for this platform and arch where fancy-pty will look for it?
+ *
+ * Only `chmodExec` touches it, in place: packaging can drop the executable bit on
+ * POSIX. It is not signed here: fancy-pty's binaries are built on native runners
+ * and its own docs ask for no signing step.
+ */
+function checkFancyPty(
+    dir: string,
+    platform: string,
+    archName: string | undefined,
+    io: AfterPackIo,
+): AfterPackResult {
+    const file = platform === 'win32' ? 'fancy-pty-helper.exe' : 'fancy-pty-helper';
+    const bin = path.join(dir, 'bin');
+    let keys: string[];
+    if (archName === 'universal') keys = [`${platform}-x64`, `${platform}-arm64`];
+    else if (archName) keys = [`${platform}-${archName}`];
+    else keys = io.readdir(bin).filter((n) => n.startsWith(`${platform}-`));
+
+    const helpers = keys.map((k) => path.join(bin, k, file));
+    const missing = helpers.filter((h) => !io.exists(h));
+    if (helpers.length === 0 || missing.length > 0) {
+        return {
+            platform,
+            action: 'failed',
+            ok: false,
+            detail:
+                `fancy-pty helper not found (${missing.join(', ') || `no ${platform} helper under ${bin}`}): ` +
+                `no terminal can start. Add '${UNPACK_GLOB}' to asarUnpack.`,
+        };
+    }
+
+    // The detached host runs from the unpacked tree when it is there, and from
+    // there it can only `import` a fancy-pty whose JS was unpacked too. So `bin/`
+    // alone starts in-process terminals and leaves the host unable to load.
+    const hostScript = path.join(path.dirname(path.dirname(path.dirname(dir))), TERM_HOST_PATH, 'dist', 'pty-host.js');
+    if (io.exists(hostScript) && !io.exists(path.join(dir, 'package.json'))) {
+        return {
+            platform,
+            action: 'failed',
+            ok: false,
+            detail:
+                `the pty-host is unpacked at ${hostScript} and fancy-pty's JavaScript is not: the detached ` +
+                `host cannot load. Unpack all of fancy-pty: '${UNPACK_GLOB}' in asarUnpack.`,
+        };
+    }
+
+    if (platform === 'win32') {
+        return { platform, action: 'already-present', ok: true, detail: `fancy-pty helper in place at ${helpers[0]}` };
+    }
+    for (const h of helpers) io.chmodExec(h);
+    return { platform, action: 'fixed', ok: true, detail: `fancy-pty helper executable at ${helpers.join(', ')}` };
+}
+
 /** electron-builder `Arch` enum → Node/node-pty arch name (used in prebuild dirs). */
 const ARCH_ENUM_NAMES: Record<number, string> = {
     0: 'ia32',
@@ -263,10 +347,10 @@ function linuxChmodSpawnHelper(release: string, io: AfterPackIo): AfterPackResul
 }
 
 /**
- * Make a packaged node-pty spawn a working terminal on the platform being packed.
- * Call from electron-builder's `afterPack`. NEVER throws for the expected
- * outcomes; returns a result describing what it did (inspect `ok`). Idempotent —
- * safe to run on every build.
+ * Check a packaged app can start a terminal on the platform being packed. Call from
+ * electron-builder's `afterPack`. NEVER throws for the expected outcomes; returns a
+ * result describing what it did (inspect `ok`). Idempotent — safe to run on every
+ * build.
  */
 export async function fancyTermAfterPack(
     context: AfterPackContext,
@@ -274,15 +358,46 @@ export async function fancyTermAfterPack(
     io: AfterPackIo = nodeAfterPackIo(),
 ): Promise<AfterPackResult> {
     const platform = opts.platform ?? context.electronPlatformName;
+    const fancyPty = opts.fancyPtyDir ?? resolveFancyPtyDir(context.appOutDir, platform, io);
     const nodePty = opts.nodePtyDir ?? resolveNodePtyDir(context.appOutDir, platform, io);
+    const helper = fancyPty ? checkFancyPty(fancyPty, platform, targetArchName(context, opts), io) : null;
+
     if (!nodePty) {
+        return (
+            helper ?? {
+                platform,
+                action: 'skipped',
+                ok: false,
+                detail: `@particle-academy/fancy-pty not found under appOutDir: add '${UNPACK_GLOB}' to asarUnpack, or pass fancyPtyDir`,
+            }
+        );
+    }
+
+    // A node-pty you ship yourself. Its own result decides `ok` when fancy-pty is
+    // not unpacked, so a build that injects it and worked before still passes, but
+    // that build cannot run the detached host, and the detail says so.
+    const injected = fixNodePty(nodePty, platform, context, opts, io);
+    if (!helper) {
         return {
-            platform,
-            action: 'skipped',
-            ok: false,
-            detail: 'node-pty not found under appOutDir (adjust asarUnpack or pass nodePtyDir)',
+            ...injected,
+            detail: `${injected.detail ?? injected.action}; fancy-pty is not unpacked, so the default engine and the detached host cannot start`,
         };
     }
+    return {
+        platform,
+        action: helper.ok ? injected.action : helper.action,
+        ok: injected.ok && helper.ok,
+        detail: `${injected.detail ?? injected.action}; ${helper.detail}`,
+    };
+}
+
+function fixNodePty(
+    nodePty: string,
+    platform: string,
+    context: AfterPackContext,
+    opts: AfterPackOptions,
+    io: AfterPackIo,
+): AfterPackResult {
     const release = path.join(nodePty, 'build', 'Release');
     switch (platform) {
         case 'win32': {

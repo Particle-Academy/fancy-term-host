@@ -275,11 +275,115 @@ describe('fancyTermAfterPack — linux spawn-helper +x', () => {
     });
 });
 
-describe('fancyTermAfterPack — no node-pty found', () => {
-    it('skips (not ok) when node-pty is absent from the packaged app', async () => {
+describe('fancyTermAfterPack — no engine found', () => {
+    it('skips (not ok) when neither engine is in the packaged app, and names the fix', async () => {
         const { io } = fakeIo({ files: [] });
         const res = await fancyTermAfterPack(CTX, {}, io);
         expect(res.ok).toBe(false);
         expect(res.action).toBe('skipped');
+        expect(res.detail).toContain('asarUnpack');
+    });
+});
+
+describe('fancyTermAfterPack — the fancy-pty helper', () => {
+    const res = (out: string) => path.join(out, 'resources');
+    const unpacked = path.join(res('/out'), 'app.asar.unpacked', 'node_modules', '@particle-academy', 'fancy-pty');
+    const helper = (key: string, file: string) => path.join(unpacked, 'bin', key, file);
+    const WIN = { appOutDir: '/out', electronPlatformName: 'win32', arch: 1 };
+    const LINUX = { appOutDir: '/out', electronPlatformName: 'linux', arch: 'arm64' };
+
+    it('passes on Windows when the target arch helper is unpacked, and moves nothing', async () => {
+        const { io, copies, mkdirs, chmods } = fakeIo({
+            files: [unpacked, path.join(unpacked, 'package.json'), helper('win32-x64', 'fancy-pty-helper.exe')],
+        });
+        const r = await fancyTermAfterPack(WIN, {}, io);
+        expect(r).toMatchObject({ ok: true, action: 'already-present' });
+        expect(copies).toEqual([]);
+        expect(mkdirs).toEqual([]);
+        expect(chmods).toEqual([]);
+    });
+
+    it('fails when only another arch is there: an x64 app cannot run the arm64 helper', async () => {
+        const { io } = fakeIo({
+            files: [unpacked, helper('win32-arm64', 'fancy-pty-helper.exe')],
+        });
+        const r = await fancyTermAfterPack(WIN, {}, io);
+        expect(r.ok).toBe(false);
+        expect(r.detail).toContain('win32-x64');
+        expect(r.detail).toContain('asarUnpack');
+    });
+
+    it('keeps the helper executable on POSIX, in place', async () => {
+        const h = helper('linux-arm64', 'fancy-pty-helper');
+        const { io, chmods, copies } = fakeIo({ files: [unpacked, path.join(unpacked, 'package.json'), h] });
+        const r = await fancyTermAfterPack(LINUX, {}, io);
+        expect(r).toMatchObject({ ok: true, action: 'fixed' });
+        expect(chmods).toEqual([h]);
+        expect(copies).toEqual([]);
+    });
+
+    it('checks both arches of a universal build', async () => {
+        const { io } = fakeIo({
+            files: [unpacked, helper('linux-x64', 'fancy-pty-helper')],
+        });
+        const r = await fancyTermAfterPack({ appOutDir: '/out', electronPlatformName: 'linux', arch: 4 }, {}, io);
+        expect(r.ok).toBe(false);
+        expect(r.detail).toContain('linux-arm64');
+    });
+
+    it('with no arch given, takes what is there for the platform and fails on nothing', async () => {
+        const h = helper('linux-x64', 'fancy-pty-helper');
+        const bin = path.join(unpacked, 'bin');
+        const there = fakeIo({ files: [unpacked, h], dirs: { [bin]: ['linux-x64', 'win32-x64'] } });
+        const ok = await fancyTermAfterPack({ appOutDir: '/out', electronPlatformName: 'linux' }, {}, there.io);
+        expect(ok.ok).toBe(true);
+        expect(there.chmods).toEqual([h]);
+
+        const none = fakeIo({ files: [unpacked], dirs: { [bin]: ['win32-x64'] } });
+        const bad = await fancyTermAfterPack({ appOutDir: '/out', electronPlatformName: 'linux' }, {}, none.io);
+        expect(bad.ok).toBe(false);
+    });
+
+    it('fails when the host is unpacked and fancy-pty only as bin/: the host could not load it', async () => {
+        const hostScript = path.join(
+            res('/out'),
+            'app.asar.unpacked',
+            'node_modules',
+            '@particle-academy',
+            'fancy-term-host',
+            'dist',
+            'pty-host.js',
+        );
+        const { io } = fakeIo({ files: [unpacked, helper('win32-x64', 'fancy-pty-helper.exe'), hostScript] });
+        const r = await fancyTermAfterPack(WIN, {}, io);
+        expect(r.ok).toBe(false);
+        expect(r.detail).toContain('detached');
+    });
+
+    it('a node-pty you ship still gets its fixes, alongside the helper check', async () => {
+        const nodePty = '/np';
+        const spawnHelper = path.join(nodePty, 'build', 'Release', 'spawn-helper');
+        const h = helper('linux-arm64', 'fancy-pty-helper');
+        const { io, chmods } = fakeIo({ files: [unpacked, path.join(unpacked, 'package.json'), h, spawnHelper] });
+        const r = await fancyTermAfterPack(LINUX, { nodePtyDir: nodePty }, io);
+        expect(r.ok).toBe(true);
+        expect(chmods).toEqual([h, spawnHelper]);
+    });
+
+    it('a node-pty build with fancy-pty still packed but helper missing is not ok', async () => {
+        const nodePty = '/np';
+        const spawnHelper = path.join(nodePty, 'build', 'Release', 'spawn-helper');
+        const { io } = fakeIo({ files: [unpacked, spawnHelper] });
+        const r = await fancyTermAfterPack(LINUX, { nodePtyDir: nodePty }, io);
+        expect(r.ok).toBe(false);
+    });
+
+    it('a node-pty build with no fancy-pty unpacked keeps its verdict, and the detail warns', async () => {
+        const nodePty = '/np';
+        const spawnHelper = path.join(nodePty, 'build', 'Release', 'spawn-helper');
+        const { io } = fakeIo({ files: [spawnHelper] });
+        const r = await fancyTermAfterPack(LINUX, { nodePtyDir: nodePty }, io);
+        expect(r.ok).toBe(true);
+        expect(r.detail).toContain('detached host');
     });
 });

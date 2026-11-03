@@ -9,12 +9,13 @@
  * replaced at the one seam where the two disagree, and the 300-odd lines of
  * terminal behaviour above it are untouched and keep their tests.
  *
+ * BOTH BACKENDS USE THIS FILE: `manager.ts` as its default engine and
+ * `pty-host.ts` as its only one, so they cannot drift.
+ *
  * WHY `open` IS INJECTED rather than imported here. It matches the four
- * injected ports this package already uses, and it means the adapter compiles,
- * typechecks and is FULLY TESTED without `@particle-academy/fancy-pty` being
- * installed — which matters because its npm name does not exist yet. The real
- * wiring is one import at the call site; the logic in this file is the part
- * that can be wrong, and it is covered now rather than after a publish.
+ * injected ports this package already uses, and it means the adapter is FULLY
+ * TESTED with a fake and no process. The real wiring is one import at each call
+ * site; the logic in this file is the part that can be wrong.
  *
  * WHY fancy-pty AT ALL — Renaissance-Analytics/genie#805, reproduced from clean
  * by `claude · tynn` on a Windows 11 VM against this package at 0.9.0:
@@ -30,6 +31,8 @@ import { StringDecoder } from 'node:string_decoder';
 /** fancy-pty's surface, declared structurally so this file imports nothing from it. */
 export interface FancyPty {
     readonly pid: number | undefined;
+    /** The command's pid. Undefined until it has started, and forever if it never does. */
+    readonly childPid?: number | undefined;
     write(data: string | Buffer): boolean;
     resize(cols: number, rows: number): boolean;
     kill(): boolean;
@@ -52,6 +55,7 @@ export type FancyPtyOpen = (options: FancyPtyOpenOptions) => FancyPty;
 
 /** The slice of node-pty's `IPty` that `InProcessBackend` actually uses. */
 export interface AdaptedPty {
+    /** With fancy-pty, the HELPER's pid: killing it takes the whole tree with it. */
     readonly pid: number;
     readonly process: string;
     onData(listener: (data: string) => void): void;
@@ -59,6 +63,14 @@ export interface AdaptedPty {
     write(data: string): void;
     resize(cols: number, rows: number): void;
     kill(): void;
+}
+
+/** What this adapter adds to that slice, which an injected engine need not have. */
+export interface FancyAdaptedPty extends AdaptedPty {
+    /** The command's pid. Undefined until it has started, and forever if it never does. */
+    readonly childPid: number | undefined;
+    /** A fault, after its words have already gone through `onData`. */
+    onError(listener: (error: Error) => void): void;
 }
 
 export interface AdaptedSpawnOptions {
@@ -112,7 +124,7 @@ export interface AdaptedSpawnOptions {
  *   so `name` is accepted and ignored rather than being quietly honoured.
  */
 export function createFancyPtySpawn(open: FancyPtyOpen) {
-    function spawn(file: string, args: string[], opts: AdaptedSpawnOptions): AdaptedPty {
+    function spawn(file: string, args: string[], opts: AdaptedSpawnOptions): FancyAdaptedPty {
         const pty = open({
             argv: [file, ...args],
             cwd: opts.cwd,
@@ -131,6 +143,7 @@ export function createFancyPtySpawn(open: FancyPtyOpen) {
         const decoder = new StringDecoder('utf8');
         const dataListeners: ((data: string) => void)[] = [];
         const exitListeners: ((e: { exitCode: number; signal?: number }) => void)[] = [];
+        const errorListeners: ((error: Error) => void)[] = [];
 
         pty.onData((chunk) => {
             const text = decoder.write(chunk);
@@ -170,7 +183,11 @@ export function createFancyPtySpawn(open: FancyPtyOpen) {
         // explanation is the failure this package keeps paying for. It reaches
         // the user in the one place they are already looking.
         pty.onError((err) => {
-            for (const fn of dataListeners) fn(`\r\n[fancy-pty] ${err.message}\r\n`);
+            try {
+                for (const fn of dataListeners) fn(`\r\n[fancy-pty] ${err.message}\r\n`);
+            } finally {
+                for (const fn of errorListeners) fn(err);
+            }
         });
 
         return {
@@ -186,6 +203,12 @@ export function createFancyPtySpawn(open: FancyPtyOpen) {
             // sets on every spawn — so `file` is both correct and all it needs.
             get process() {
                 return file;
+            },
+            get childPid() {
+                return pty.childPid;
+            },
+            onError(listener) {
+                errorListeners.push(listener);
             },
             onData(listener) {
                 dataListeners.push(listener);

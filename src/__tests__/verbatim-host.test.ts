@@ -10,27 +10,38 @@ import { encodeFrame, FrameDecoder, PROTOCOL_VERSION } from '../host-protocol';
 import type { SnapshotStore } from '../sessions';
 
 /**
- * `windowsVerbatimArguments` across the IPC boundary, against the REAL pty-host
- * module and a REAL socket, with only node-pty faked. It is what proves on every
- * platform that the flag survives the host's own option plumbing and arrives in
- * the shape node-pty needs. `verbatim-live.test.ts` runs the same path with the
- * real engine, on Windows only.
+ * The options a create carries, across the IPC boundary, against the REAL pty-host
+ * module and a REAL socket, with only fancy-pty's `open` faked. It is what proves on
+ * every platform that `windowsVerbatimArguments` survives the host's own option
+ * plumbing and reaches the engine. `verbatim-live.test.ts` runs the same path with
+ * the real engine, on Windows only.
  */
 
-const spawned = vi.hoisted(() => [] as Array<{ file: string; args: string[] | string }>);
+interface Opened {
+    argv: string[];
+    windowsVerbatimArguments?: boolean;
+    env?: Record<string, string | undefined>;
+    name?: unknown;
+}
 
-vi.mock('node-pty', () => ({
-    spawn: (file: string, args: string[] | string) => {
-        if (file === 'fth-spawn-throws') throw new Error('the engine refused this');
-        spawned.push({ file, args });
-        return { pid: 77, onData() {}, onExit() {}, write() {}, resize() {}, kill() {} };
+const opened = vi.hoisted(() => [] as Opened[]);
+
+vi.mock('@particle-academy/fancy-pty', () => ({
+    open: (options: Opened) => {
+        if (options.argv[0] === 'fth-spawn-throws') throw new Error('the engine refused this');
+        opened.push(options);
+        return {
+            pid: 77,
+            childPid: 78,
+            onData() {},
+            onExit() {},
+            onError() {},
+            write: () => true,
+            resize: () => true,
+            kill: () => true,
+        };
     },
 }));
-
-const realPlatform = process.platform;
-function onPlatform(platform: string): void {
-    Object.defineProperty(process, 'platform', { value: platform, configurable: true });
-}
 
 const noSnapshots: SnapshotStore = {
     readSnapshot: () => null,
@@ -56,16 +67,13 @@ os.hostname = () => `fth-test-verbatim-host-${process.pid}`;
 
 let client: HostClient;
 
-async function nextSpawn(): Promise<{ file: string; args: string[] | string }> {
-    for (let i = 0; i < 300 && spawned.length === 0; i++) {
-        await new Promise((r) => setTimeout(r, 10));
-    }
-    expect(spawned.length, 'the host never called node-pty').toBe(1);
-    return spawned[0];
+async function nextOpen(): Promise<Opened> {
+    await vi.waitFor(() => expect(opened.length, 'the host never called open').toBe(1), { timeout: 3000 });
+    return opened[0];
 }
 
 beforeAll(async () => {
-    if (realPlatform === 'win32') expect(socketPathFor(userData)).not.toBe(defaultSocket);
+    if (process.platform === 'win32') expect(socketPathFor(userData)).not.toBe(defaultSocket);
     fs.mkdirSync(userData, { recursive: true });
     process.env.GENIE_USERDATA = userData;
     // The module IS the host: importing it starts the server and writes the pidfile.
@@ -84,50 +92,53 @@ afterAll(() => {
 });
 
 beforeEach(() => {
-    spawned.length = 0;
+    opened.length = 0;
 });
 
-afterEach(() => onPlatform(realPlatform));
+afterEach(() => {
+    vi.restoreAllMocks();
+});
 
 describe('the real pty-host', () => {
-    it('on Windows, hands node-pty the verbatim line as a string', async () => {
+    it('hands the engine the flag, and the arguments as a list', async () => {
         // The handshake happened for real, so this also proves the host
         // advertises the capability: the client refuses to send otherwise.
-        onPlatform('win32');
-        client.create({ id: 'win', cwd: userData, shell: 'cmd.exe', args: ARGS, windowsVerbatimArguments: true });
-        const s = await nextSpawn();
-        expect(s.file).toBe('cmd.exe');
-        expect(s.args).toBe(`/d /s /c "${LINE}"`);
+        client.create({ id: 'flag', cwd: userData, shell: 'cmd.exe', args: ARGS, windowsVerbatimArguments: true });
+        const o = await nextOpen();
+        expect(o.argv).toEqual(['cmd.exe', ...ARGS]);
+        expect(o.windowsVerbatimArguments).toBe(true);
     });
 
-    it('on Windows, keeps a default spawn a list', async () => {
-        onPlatform('win32');
-        client.create({ id: 'win-default', cwd: userData, shell: 'cmd.exe', args: ARGS });
-        expect((await nextSpawn()).args).toEqual(ARGS);
+    it('sends no flag on a default spawn', async () => {
+        client.create({ id: 'default', cwd: userData, shell: 'cmd.exe', args: ARGS });
+        const o = await nextOpen();
+        expect(o.argv).toEqual(['cmd.exe', ...ARGS]);
+        expect(o).not.toHaveProperty('windowsVerbatimArguments');
     });
 
-    it('on POSIX, keeps the list even with the flag, because node-pty throws on a string', async () => {
-        onPlatform('linux');
-        client.create({ id: 'posix', cwd: userData, shell: 'sh', args: ['-c', 'true'], windowsVerbatimArguments: true });
-        expect((await nextSpawn()).args).toEqual(['-c', 'true']);
+    it('resolves TERM itself and passes no node-pty name', async () => {
+        client.create({ id: 'term', cwd: userData, shell: 'sh', env: { TERM: 'fth-test-term', FTH_X: '1' } });
+        const o = await nextOpen();
+        expect(o.env?.TERM).toBe('fth-test-term');
+        expect(o.env?.FTH_X).toBe('1');
+        expect(o).not.toHaveProperty('name');
     });
 
     it('answers a create the engine throws on, and leaves the id free', async () => {
-        const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+        vi.spyOn(console, 'error').mockImplementation(() => {});
         const heard: Array<[string, string]> = [];
         client.on('create-error', (id: string, e: { message: string }) => heard.push([id, e.message]));
         client.create({ id: 'throws', cwd: userData, shell: 'fth-spawn-throws' });
         await vi.waitFor(() => expect(heard).toEqual([['throws', 'the engine refused this']]), { timeout: 3000 });
         expect(client.isLive('throws')).toBe(false);
-        logged.mockRestore();
 
         client.create({ id: 'throws', cwd: userData, shell: 'cmd.exe' });
-        await nextSpawn();
+        await nextOpen();
         expect(client.isLive('throws')).toBe(true);
     });
 
     it('refuses a non-boolean sent straight to the socket, spawning nothing, and says so', async () => {
-        const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+        vi.spyOn(console, 'error').mockImplementation(() => {});
         const sock = net.createConnection(socketPathFor(userData));
         const dec = new FrameDecoder();
         let failed: { message?: string } | undefined;
@@ -157,9 +168,39 @@ describe('the real pty-host', () => {
         );
         await answered;
         sock.destroy();
-        expect(spawned).toEqual([]);
+        expect(opened).toEqual([]);
         expect(failed?.message).toMatch(/windowsVerbatimArguments/);
-        logged.mockRestore();
+    });
+
+    it('takes frames in order: a kill in the same read as its create finds the pty', async () => {
+        // The frames have to arrive as ONE read, or this passes on the bug: with
+        // two socket writes the host usually sees them separately. A create is async,
+        // so a frame run beside it instead of after it finds no pty and does nothing.
+        const sock = net.createConnection(socketPathFor(userData));
+        await new Promise<void>((r) => sock.once('connect', () => r()));
+        const dec = new FrameDecoder();
+        const lists = new Map<number, string[]>();
+        sock.on('data', (b: Buffer) => {
+            for (const f of dec.push(b)) {
+                const m = f as { kind: string; seq: number; terminals?: Array<{ id: string }> };
+                if (m.kind === 'list-result') lists.set(m.seq, (m.terminals ?? []).map((t) => t.id));
+            }
+        });
+        sock.write(
+            Buffer.concat([
+                encodeFrame({ kind: 'create', seq: 1, opts: { id: 'chunk', cwd: userData, shell: 'sh' } }),
+                encodeFrame({ kind: 'kill', id: 'chunk' }),
+                encodeFrame({ kind: 'ping', seq: 2 }),
+            ]),
+        );
+        await nextOpen();
+        // Asked once everything above has run: out of order, the kill was lost and
+        // the terminal is still here.
+        await new Promise((r) => setTimeout(r, 50));
+        sock.write(encodeFrame({ kind: 'list', seq: 3 }));
+        await vi.waitFor(() => expect(lists.has(3)).toBe(true), { timeout: 3000 });
+        sock.destroy();
+        expect(lists.get(3)).not.toContain('chunk');
     });
 
     it('does not change the protocol version: older clients and hosts still attach', () => {

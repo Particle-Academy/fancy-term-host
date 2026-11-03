@@ -267,4 +267,25 @@ describe('errors reach the user', () => {
         expect(out.join('')).toContain('[fancy-pty]');
         expect(out.join('')).toContain('CreateProcessW');
     });
+
+    it('tells an error listener after the words are out, even if a data listener throws', () => {
+        // The detached host broadcasts `create-failed` from this listener, so a data
+        // listener that throws must not stand between a failed start and the client.
+        const f = fakePty();
+        const pty = createFancyPtySpawn(f.open)('sh', [], {});
+        const order: string[] = [];
+        pty.onData(() => {
+            order.push('data');
+            throw new Error('a listener broke');
+        });
+        pty.onError((e) => order.push(`error: ${e.message}`));
+        expect(() => f.emitError(new Error('no such program'))).toThrow('a listener broke');
+        expect(order).toEqual(['data', 'error: no such program']);
+    });
+
+    it('exposes the command pid, which stays undefined for a command that never started', () => {
+        const f = fakePty();
+        const pty = createFancyPtySpawn(f.open)('sh', [], {});
+        expect(pty.childPid).toBeUndefined();
+    });
 });

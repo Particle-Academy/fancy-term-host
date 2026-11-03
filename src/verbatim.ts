@@ -1,7 +1,7 @@
 /**
  * `windowsVerbatimArguments`, the rules shared by both backends.
  *
- * Pure: no node-pty, no net, so both ends of the host protocol can import it.
+ * Pure: no pty engine, no net, so both ends of the host protocol can import it.
  *
  * THE FAILURE THIS FILE GUARDS AGAINST IS SILENCE. Every layer below the public
  * option has a way to not hear it: an injected engine that takes no such option,
@@ -30,21 +30,4 @@ export function checkVerbatimOption(
             `${who} cannot honour windowsVerbatimArguments. The line would be quoted and cmd.exe would not run it, so nothing was spawned.`,
         );
     }
-}
-
-/**
- * The `args` to give node-pty, which the detached host still runs on.
- *
- * node-pty has no option of this name and does not need one: on Windows a STRING
- * `args` is the rest of the command line, used as is, with only the program quoted
- * if it has whitespace (`argsToCommandLine` in its windowsPtyAgent). That is
- * exactly what fancy-pty's flag does. On POSIX it throws on a string, so the list
- * stays a list there.
- */
-export function nodePtyArgs(
-    args: string[],
-    verbatim: boolean | undefined,
-    platform: string = process.platform,
-): string[] | string {
-    return verbatim === true && platform === 'win32' ? args.join(' ') : args;
 }

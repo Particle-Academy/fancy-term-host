@@ -5,7 +5,7 @@
  * (main/terminal/host-client.ts) talk over a local IPC transport — a named pipe
  * on Windows, a unix domain socket on POSIX — using a tiny length-prefixed JSON
  * framing so there's no heavy dependency. This module is PURE (no electron, no
- * node-pty, no net): just the message shapes + the framing typed to them, so it
+ * pty engine, no net): just the message shapes + the framing typed to them, so it
  * can be imported by both ends AND unit-tested in isolation.
  *
  * The framing itself lives in `ipc/frame.ts`, which the `./ipc` subpath also
@@ -32,8 +32,11 @@ export const PROTOCOL_VERSION = 2;
  * that, but the client refuses a mismatched host and lifecycle reaps it, killing
  * every live terminal on upgrade for an option most consumers never set. A missing
  * list reads as "no capabilities", which is what an older host means by it.
+ *
+ * `fancy-pty` says which engine this host runs, because a running host survives an
+ * upgrade and keeps the engine it started with. See `HostClient.hostEngine()`.
  */
-export const HOST_CAPABILITIES = ['windowsVerbatimArguments'] as const;
+export const HOST_CAPABILITIES = ['windowsVerbatimArguments', 'fancy-pty'] as const;
 
 /** Requests the client sends to the host. `seq` correlates a reply. */
 export type ClientMessage =

@@ -15,7 +15,7 @@ import {
     type ClientMessage,
     type HostMessage,
 } from '../host-protocol';
-import { checkVerbatimOption, nodePtyArgs } from '../verbatim';
+import { checkVerbatimOption } from '../verbatim';
 import type { SnapshotStore } from '../sessions';
 
 /**
@@ -326,23 +326,6 @@ describe('HostClient: create() -> the frame the host receives', () => {
     });
 });
 
-describe('nodePtyArgs: what the detached host hands node-pty', () => {
-    it('joins with single spaces on Windows and changes nothing else', () => {
-        // node-pty takes a STRING as the rest of the command line, verbatim, and
-        // quotes only the program: `argsToCommandLine` in its windowsPtyAgent.
-        expect(nodePtyArgs(ARGS, true, 'win32')).toBe(`/d /s /c "${LINE}"`);
-    });
-
-    it('stays a list on POSIX, where node-pty throws on a string', () => {
-        expect(nodePtyArgs(['-c', 'true'], true, 'linux')).toEqual(['-c', 'true']);
-        expect(nodePtyArgs(['-c', 'true'], true, 'darwin')).toEqual(['-c', 'true']);
-    });
-
-    it('stays a list without the flag', () => {
-        expect(nodePtyArgs(ARGS, undefined, 'win32')).toEqual(ARGS);
-        expect(nodePtyArgs(ARGS, false, 'win32')).toEqual(ARGS);
-    });
-});
 
 describe('checkVerbatimOption', () => {
     it('accepts absent, false, and true where it is honoured', () => {

@@ -1,12 +1,12 @@
 /**
  * Genie detached pty-host (Tier 3).
  *
- * A HEADLESS Node process — NO electron import — that owns the real node-pty
- * instances so they survive a full quit of the Electron app. The in-app
- * HostClient connects over a local socket (named pipe on Windows, unix domain
- * socket on POSIX) and proxies create/write/resize/kill; the host pushes back
- * `data`/`exit`. The host keeps its OWN scrollback ring buffer per pty so a
- * reattach AFTER a full quit can replay history.
+ * A HEADLESS Node process — NO electron import — that owns the real ptys so they
+ * survive a full quit of the Electron app. The in-app HostClient connects over a
+ * local socket (named pipe on Windows, unix domain socket on POSIX) and proxies
+ * create/write/resize/kill; the host pushes back `data`/`exit`. The host keeps its
+ * OWN scrollback ring buffer per pty so a reattach AFTER a full quit can replay
+ * history.
  *
  * Launched detached by background.ts:
  *   spawn(process.execPath, [hostScript], {
@@ -14,9 +14,18 @@
  *     env: { ELECTRON_RUN_AS_NODE: '1', GENIE_USERDATA: <userData>, … }
  *   }).unref()
  *
- * ELECTRON_RUN_AS_NODE makes Electron's binary run as plain Node so node-pty's
- * native ABI matches the one the app was built against (critical — a system Node
- * with a different ABI would fail to load the .node).
+ * Each pty is a fancy-pty helper process of its own, so an exited terminal cannot
+ * retain anything in this long-lived process (#14), and nothing here depends on the
+ * runtime's ABI: any Node of the supported version can run this script. Both are
+ * why it no longer runs on node-pty, and so is the program lookup: node-pty hands a
+ * bare name to the OS, which on Windows searches this process's own folders first.
+ *
+ * WINDOWS CONSOLES. This process has no console when it is truly detached, and a
+ * console app it started without care would get a new, visible one. The only thing
+ * it starts is the helper, which fancy-pty spawns with `detached` and `windowsHide`
+ * (DETACHED_PROCESS, so no console at all), and whose only child runs on the
+ * pseudoconsole. So there is no per-shell console and no agent process, which is
+ * what node-pty's `useConptyDll` was set here to avoid (#4).
  *
  * Self-terminates after an idle period with zero live ptys AND no connected
  * client, so a host can never become a forever-orphan.
@@ -25,7 +34,8 @@
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, IPty } from 'node-pty';
+import { open } from '@particle-academy/fancy-pty';
+import { createFancyPtySpawn, type FancyAdaptedPty, type FancyPtyOpen } from './fancy-pty';
 import {
     encodeFrame,
     FrameDecoder,
@@ -38,7 +48,15 @@ import { socketPathFor, pidfilePath } from './host-locate';
 import { resolveSpawnCwd } from './cwd';
 import { PtyRegistry } from './pty-registry';
 import { Scrollback } from './scrollback';
-import { checkVerbatimOption, nodePtyArgs } from './verbatim';
+import { checkVerbatimOption } from './verbatim';
+
+/**
+ * The one adapter the in-process backend's default engine uses too, so the two
+ * cannot drift. A static import here, unlike `manager.ts`, because this script
+ * exists only to run ptys: if the engine cannot load, the host fails to start and
+ * the client falls back to in-process with a status message.
+ */
+const spawnPty = createFancyPtySpawn(open as FancyPtyOpen);
 
 /** Self-exit after this long with no ptys AND no connected client. */
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -84,12 +102,12 @@ function enableCrashReports(dir: string): void {
 }
 
 interface HostPty {
-    pty: IPty;
+    pty: FancyAdaptedPty;
     shell: string;
     scrollback: Scrollback;
 }
 
-const ptys = new PtyRegistry<IPty>();
+const ptys = new PtyRegistry<FancyAdaptedPty>();
 const clients = new Set<net.Socket>();
 let lastActivity = Date.now();
 /** The listening server, set once startServer binds — used by graceful shutdown. */
@@ -148,14 +166,14 @@ function makePty(opts: {
     checkVerbatimOption(opts.windowsVerbatimArguments, true, 'the pty-host');
     const shell = opts.shell ?? defaultShell();
     const env = { ...process.env, ...(opts.env ?? {}) } as Record<string, string>;
-    // node-pty's `name` WINS over env.TERM (`name = opt.name || env.TERM; env.TERM
-    // = name`), so `name` must carry the resolved TERM — a hardcoded
-    // 'xterm-color' silently overrode this with a terminfo lacking the `Ms`
-    // (OSC 52 clipboard) cap, so TUI copy-via-OSC-52 never fired. (Detached host.)
+    // fancy-pty has no `name` to override this, so the resolved TERM is what the
+    // shell gets. Most TUIs key their capabilities off it, including the OSC 52
+    // clipboard cap.
     env.TERM = env.TERM || 'xterm-256color';
 
-    const pty = spawn(shell, nodePtyArgs(opts.args ?? [], opts.windowsVerbatimArguments), {
-        name: env.TERM,
+    // Throws for what is refused up front (a batch argument cmd.exe would act on, no
+    // helper for this platform), and the `create` case answers that.
+    const pty = spawnPty(shell, opts.args ?? [], {
         // Native-convert + validate the requested dir; a stale/foreign/MSYS cwd
         // (e.g. Git Bash's /c/Users/me) would otherwise crash spawn with Windows
         // ERROR_DIRECTORY (267). Falls back to home if unusable.
@@ -163,14 +181,9 @@ function makePty(opts: {
         cols: opts.cols ?? 80,
         rows: opts.rows ?? 24,
         env,
-        // Modern bundled ConPTY (conpty.dll). THIS file IS the windowless
-        // detached host (spawnDetached: a `detached` console-less node.exe), so
-        // it is exactly where #4 bites: legacy ConPTY allocates a stray VISIBLE
-        // console per shell, and its kill path forks `conpty_console_list_agent`
-        // un-hidden (console flash + "AttachConsole failed" crash). conpty.dll
-        // runs console-less correctly and takes neither fork. Windows-only;
-        // ignored elsewhere. (Mirrors InProcessBackend in manager.ts.)
-        useConptyDll: true,
+        ...(opts.windowsVerbatimArguments === undefined
+            ? {}
+            : { windowsVerbatimArguments: opts.windowsVerbatimArguments }),
     });
 
     const entry: HostPty = { pty, shell, scrollback: new Scrollback(opts.scrollbackMax) };
@@ -178,6 +191,15 @@ function makePty(opts: {
     pty.onData((data) => {
         entry.scrollback.append(data);
         broadcast({ kind: 'data', id: opts.id, data });
+    });
+    // What the helper could not start (a program it cannot find, a batch argument
+    // only it could judge) arrives after `open()` returned, so after `created` was
+    // sent. The adapter has already put the words in the data stream, and the exit
+    // follows; this tells the client it was a failed start, not a shell that ended.
+    pty.onError((err) => {
+        if (pty.childPid === undefined) {
+            broadcast({ kind: 'create-failed', id: opts.id, message: err.message });
+        }
     });
     pty.onExit(({ exitCode, signal }) => {
         // Teardown confirmed. Until this fires the id stays reserved, which is
@@ -240,11 +262,7 @@ async function handleClientMessage(sock: net.Socket, msg: ClientMessage): Promis
         case 'resize': {
             const e = ptys.get(msg.id);
             if (e) {
-                try {
-                    e.pty.resize(Math.max(1, msg.cols | 0), Math.max(1, msg.rows | 0));
-                } catch {
-                    /* transient 0×0 during layout */
-                }
+                e.pty.resize(Math.max(1, msg.cols | 0), Math.max(1, msg.rows | 0));
             }
             break;
         }
@@ -321,6 +339,7 @@ function startServer(socketPath: string): void {
         clients.add(sock);
         lastActivity = Date.now();
         const decoder = new FrameDecoder();
+        let inOrder = Promise.resolve();
         sock.on('data', (chunk: Buffer) => {
             const frames = decoder.push(chunk);
             if (decoder.desynced) {
@@ -331,13 +350,15 @@ function startServer(socketPath: string): void {
                 }
                 return;
             }
-            // Awaited in order: `create` is async now (it may wait for a
-            // dispose of the same id), and running frames concurrently would let
-            // a later write reach a pty its create had not finished making.
+            // One at a time, per connection: `create` is async (it may wait for a
+            // dispose of the same id), and a frame run beside it finds no pty yet,
+            // so a write or kill in the same read as its create was silently lost.
             for (const f of frames) {
-                void handleClientMessage(sock, f as ClientMessage).catch((err: unknown) => {
-                    console.error('[pty-host] client message failed:', err);
-                });
+                inOrder = inOrder
+                    .then(() => handleClientMessage(sock, f as ClientMessage))
+                    .catch((err: unknown) => {
+                        console.error('[pty-host] client message failed:', err);
+                    });
             }
         });
         const drop = () => {

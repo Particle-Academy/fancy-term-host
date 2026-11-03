@@ -11,3 +11,6 @@ coverage/
 # Scratch for the windowsVerbatimArguments suites, for the same reason.
 .tmp-verbatim-host/
 .tmp-verbatim-live/
+
+# Scratch for the real-host suite, for the same reason.
+.tmp-host-live/

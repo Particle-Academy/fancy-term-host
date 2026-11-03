@@ -15,13 +15,97 @@ upgrading.
 
 ## [Unreleased]
 
+**The detached host moves from `node-pty` to `@particle-academy/fancy-pty`,** on
+`main` only. `0.4` stays as it is. The first three items under Changed are the ones
+that can need action.
+
+### Changed
+
+- **BREAKING (Windows): the detached host no longer starts a program from its own
+  folders.** A name with no directory part is looked up in the system directory, the
+  Windows directory and the absolute entries of `PATH`, as the in-process backend does.
+  **What you must DO:** nothing for a shell or a program on `PATH`. If you relied on a
+  bare name finding a program in the host's folder, or through a relative `PATH` entry,
+  ask for it: `.\tool.exe`, or an absolute path. A name with a directory part is
+  relative to the host's working directory, not the `cwd` option.
+
+- **BREAKING (every OS): a `.cmd` or `.bat` argument `cmd.exe` would act on is refused
+  on the detached host too.** That is `&`, `|`, `<`, `>`, `^`, `%`, `"`, `!`, a line feed
+  or a carriage return, and nothing is started. It comes back as a failed create (see
+  Fixed). **What you must DO:** nothing for flags, `key=value` and paths with spaces. If
+  you need one of those characters, set `windowsVerbatimArguments` and quote it yourself,
+  and never do that with text you did not write.
+
+- **A running host is not replaced, so an upgrade does not reach it until it ends.**
+  `PROTOCOL_VERSION` stays 2 on purpose, because a bump would end every live terminal.
+  A new client attaches to an old host, keeps its terminals and can replay and drive
+  them, and that host keeps running `node-pty`, with the program lookup above and its
+  retention (#14). If an upgrade removes `node-pty` from disk, new terminals on that old
+  host can also fail to start. `HostClient.hostEngine()` says which engine you are
+  connected to. **What you must DO to get the fix:** end the old host with
+  `shutdownHost()` when you can afford to, which also ends its terminals, so snapshot
+  first. The next host started runs this code. The T3+ service is the same: it does not
+  reinstall for this, so stop it (`stopHostService`, or `shutdownHost()`).
+
+- **Electron: unpack fancy-pty, all of it.** The hook no longer has a `node-pty` to
+  look for. **What you must DO:** in `asarUnpack`, replace
+  `**/node_modules/node-pty/**` with `**/node_modules/@particle-academy/fancy-pty/**`.
+  Not just `bin/`: the host loads its JavaScript too when it runs from the unpacked tree.
+  `fancyTermAfterPack` now returns `ok: false` when the helper for your target is
+  missing, and it never moves it. See `docs/packaging.md`.
+
+- **`pid` from the detached host is now fancy-pty's helper, not the shell,** in
+  `list()` and in what a warm `create()` returns. The in-process backend has done this
+  since 0.10.0. **What you must DO:** nothing if you use it for
+  diagnostics or to kill the terminal: killing the helper takes the whole tree. If you
+  inspect that process expecting a shell, look at its descendants.
+
+- **`@particle-academy/fancy-pty` is a plain dependency at `>=0.5.0 <2.0`** (was
+  optional, `>=0.3.0 <2.0`), because the host has no other engine and 0.4.0 and 0.5.0
+  are where the lookup and the batch refusal arrive. It has no build, no install script
+  and no dependencies, so `--omit=optional` has nothing left to skip for this package,
+  and `./ipc` still loads none of it. On a platform with no helper, `create` fails with
+  an error naming it. **What you must DO:** nothing.
+
+- `runtime.nodePtyDir` and `$FANCY_TERM_NODE_PTY` are deprecated: nothing needs an
+  ABI-matched build. They still work. **What you must DO:** nothing, or drop them.
+
+- The host now runs a connection's frames one at a time. See Fixed.
+
 ### Added
 
 - **A `create-error` event on `HostClient`, and `onCreateError` on
   `subscribeBackendEvents`,** carrying `(id, { message })`. See Fixed.
   **What you must DO:** nothing, unless you want the reason as a value.
+- `HostClient.hostEngine()`, `'fancy-pty'` or `'node-pty'`, backed by a new `fancy-pty`
+  entry in `hello-ok`'s capabilities. A host from before this release reads as
+  `'node-pty'`.
+- `resolveFancyPtyDir` and a `fancyPtyDir` option on `fancyTermAfterPack`.
+
+### Removed
+
+- **`node-pty`, from `optionalDependencies` and `devDependencies`.** Nothing in this
+  package imports it any more. **What you must DO:** nothing, unless you inject it as
+  `ptySpawn` on the in-process backend, in which case add it to your own dependencies.
+  Injecting it still works, and `fancyTermAfterPack` still fixes a node-pty it finds.
+  The memory, threads and handles it retained per exited terminal in a long-lived host
+  (#14) are gone for any host started on this release.
+
+### Security
+
+- **On Windows, the detached host could start a different program than the one named.**
+  With `node-pty`, a bare name could resolve to a same-named file in the host's working
+  directory or next to the host's executable, or through a relative `PATH` entry, so a
+  file placed in one of those folders could run in place of the shell. `node-pty` does
+  not refuse batch arguments either. The host now has the rules fancy-pty 0.4.0 and 0.5.0
+  gave the in-process backend. A running host keeps the old behaviour until it ends: see
+  Changed.
 
 ### Fixed
+
+- **A write or kill sent in the same socket read as its `create` was lost.** The host ran
+  a connection's frames side by side, and `create` is async, so the later frame found no
+  pty and did nothing. They now run in order. **What you must DO:** nothing.
 
 - **A failed `create` on the detached host hung forever, silently.** If the spawn
   failed, the host logged it and answered nothing, and the client swallowed the
