@@ -15,6 +15,8 @@ upgrading.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-02
+
 **The detached host moves from `node-pty` to `@particle-academy/fancy-pty`,** on
 `main` only. `0.4` stays as it is. The first three items under Changed are the ones
 that can need action.

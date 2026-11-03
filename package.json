@@ -1,6 +1,6 @@
 {
     "name": "@particle-academy/fancy-term-host",
-    "version": "0.12.0",
+    "version": "0.13.0",
     "description": "Headless Node terminal backend for @particle-academy/fancy-term — owns the PTYs (@particle-academy/fancy-pty) and the T1/T2/T3 persistence engine (snapshot+replay, retained PTYs, detached pty-host) behind four injected ports. OS-agnostic, zero third-party runtime dependencies.",
     "repository": {
         "type": "git",
