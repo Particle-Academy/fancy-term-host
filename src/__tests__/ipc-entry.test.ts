@@ -141,6 +141,7 @@ describe('the built entry loads no native module', () => {
         execFileSync(process.execPath, [path.join(root, 'node_modules', 'tsup', 'dist', 'cli-default.js'), '--no-dts', '--out-dir', out], {
             cwd: root,
             stdio: 'pipe',
+            windowsHide: true,
             env: { ...process.env, NODE_ENV: 'production' },
         });
     }, 120_000);

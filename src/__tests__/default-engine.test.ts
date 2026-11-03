@@ -103,7 +103,7 @@ beforeAll(() => {
             '--out-dir',
             dist,
         ],
-        { cwd: root, stdio: 'ignore' },
+        { cwd: root, stdio: 'ignore', windowsHide: true },
     );
 }, 180_000);
 
@@ -121,6 +121,7 @@ function run(file: string, src: string): { exit?: unknown; ran?: boolean; error?
             encoding: 'utf8',
             timeout: 60_000,
             stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true,
         });
     } catch (e) {
         // Surface the CHILD's stderr. Without this the failure reads only as
