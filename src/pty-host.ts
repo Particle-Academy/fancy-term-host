@@ -29,6 +29,7 @@ import { spawn, IPty } from 'node-pty';
 import {
     encodeFrame,
     FrameDecoder,
+    HOST_CAPABILITIES,
     PROTOCOL_VERSION,
     type ClientMessage,
     type HostMessage,
@@ -37,6 +38,7 @@ import { socketPathFor, pidfilePath } from './host-locate';
 import { resolveSpawnCwd } from './cwd';
 import { PtyRegistry } from './pty-registry';
 import { Scrollback } from './scrollback';
+import { checkVerbatimOption, nodePtyArgs } from './verbatim';
 
 /** Self-exit after this long with no ptys AND no connected client. */
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000;
@@ -113,6 +115,7 @@ async function createPty(opts: {
     rows?: number;
     env?: Record<string, string>;
     scrollbackMax?: number;
+    windowsVerbatimArguments?: boolean;
 }): Promise<{ pid: number; shell: string; existing: boolean; scrollback: string }> {
     // Attach-or-spawn is the registry's decision, not this function's. It returns
     // a live pty unchanged, and for a free id calls `make` -- but NEVER while a
@@ -138,7 +141,11 @@ function makePty(opts: {
     rows?: number;
     env?: Record<string, string>;
     scrollbackMax?: number;
+    windowsVerbatimArguments?: boolean;
 }): HostPty {
+    // Honoured below, so only the boolean check can fire. The client checks too,
+    // but anything can write to this socket.
+    checkVerbatimOption(opts.windowsVerbatimArguments, true, 'the pty-host');
     const shell = opts.shell ?? defaultShell();
     const env = { ...process.env, ...(opts.env ?? {}) } as Record<string, string>;
     // node-pty's `name` WINS over env.TERM (`name = opt.name || env.TERM; env.TERM
@@ -147,7 +154,7 @@ function makePty(opts: {
     // (OSC 52 clipboard) cap, so TUI copy-via-OSC-52 never fired. (Detached host.)
     env.TERM = env.TERM || 'xterm-256color';
 
-    const pty = spawn(shell, opts.args ?? [], {
+    const pty = spawn(shell, nodePtyArgs(opts.args ?? [], opts.windowsVerbatimArguments), {
         name: env.TERM,
         // Native-convert + validate the requested dir; a stale/foreign/MSYS cwd
         // (e.g. Git Bash's /c/Users/me) would otherwise crash spawn with Windows
@@ -197,6 +204,7 @@ async function handleClientMessage(sock: net.Socket, msg: ClientMessage): Promis
                 seq: msg.seq,
                 protocolVersion: PROTOCOL_VERSION,
                 pid: process.pid,
+                capabilities: [...HOST_CAPABILITIES],
             });
             break;
         case 'create': {

@@ -43,11 +43,23 @@ T1/T2/T3 persistence engine. `CLAUDE.md` symlinks here. This file describes
 - **An exit from a pty that is no longer the registered one is ignored**, so a
   killed-and-replaced id is not clobbered. A killed pty that was not replaced
   still emits `exit`.
+- **`windowsVerbatimArguments` fails loudly at any layer that cannot honour it.**
+  Those layers would otherwise quote the line and say nothing, which is the bug
+  the option fixes. An injected engine declares `honoursWindowsVerbatimArguments`,
+  and a host advertises it in `hello-ok`'s `capabilities`. Do not move it into
+  "an older host ignores it" like `scrollbackMax`, and do not bump
+  `PROTOCOL_VERSION` for it: a mismatched host is reaped, with its terminals.
+  A new pass-through option has to be added in three places on the host path:
+  `CreateTerminalOpts`, the `create` message, and both inline option types in
+  `pty-host.ts`. On the in-process path the option list in `manager.ts` and the one
+  in `fancy-pty.ts` are allow-lists, so a field missing from either vanishes.
 
 ## Checking a change
 
-`npm test` (vitest), `npm run lint` (tsc), `npm run build` (tsup). The
-scrollback benchmark is `node --expose-gc bench/scrollback.mjs <distDir> --mb
+`npm test` (vitest), `npm run lint` (tsc), `npm run build` (tsup).
+`src/__tests__/verbatim-live.test.ts` drives a real `cmd.exe` through both
+backends and is Windows only, so CI (ubuntu-latest) skips it: run it on Windows
+when touching that path. The scrollback benchmark is `node --expose-gc bench/scrollback.mjs <distDir> --mb
 100 --chunk 4096`, also run in `.github/workflows/bench.yml`. Only compare
 numbers from the same run: the same build varied 8.5-13 s across CI runners.
 

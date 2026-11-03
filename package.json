@@ -89,7 +89,7 @@
     ],
     "optionalDependencies": {
         "node-pty": "^1.0.0",
-        "@particle-academy/fancy-pty": ">=0.1.1 <2.0"
+        "@particle-academy/fancy-pty": ">=0.3.0 <2.0"
     },
     "overrides": {
         "esbuild": "^0.28.1",
@@ -101,7 +101,7 @@
         "tsup": "^8.5.0",
         "typescript": "^5.8.0",
         "vitest": "^4.1.12",
-        "@particle-academy/fancy-pty": "^0.1.1"
+        "@particle-academy/fancy-pty": "^0.3.0"
     },
     "engines": {
         "node": ">=22"

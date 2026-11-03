@@ -44,6 +44,8 @@ export interface FancyPtyOpenOptions {
     env?: Record<string, string | undefined>;
     cols?: number;
     rows?: number;
+    /** Since fancy-pty 0.3.0, which is why that is this package's floor. */
+    windowsVerbatimArguments?: boolean;
 }
 
 export type FancyPtyOpen = (options: FancyPtyOpenOptions) => FancyPty;
@@ -65,6 +67,7 @@ export interface AdaptedSpawnOptions {
     cols?: number;
     rows?: number;
     env?: Record<string, string>;
+    windowsVerbatimArguments?: boolean;
 }
 
 /**
@@ -109,13 +112,19 @@ export interface AdaptedSpawnOptions {
  *   so `name` is accepted and ignored rather than being quietly honoured.
  */
 export function createFancyPtySpawn(open: FancyPtyOpen) {
-    return function spawn(file: string, args: string[], opts: AdaptedSpawnOptions): AdaptedPty {
+    function spawn(file: string, args: string[], opts: AdaptedSpawnOptions): AdaptedPty {
         const pty = open({
             argv: [file, ...args],
             cwd: opts.cwd,
             env: opts.env,
             cols: opts.cols ?? 80,
             rows: opts.rows ?? 24,
+            // Only when asked for, so a default spawn passes exactly what it did.
+            // `argv` stays a list either way: fancy-pty has to know which element
+            // is the program, so the join belongs to it.
+            ...(opts.windowsVerbatimArguments === undefined
+                ? {}
+                : { windowsVerbatimArguments: opts.windowsVerbatimArguments }),
         });
 
         // One decoder per pty, for difference (1) above.
@@ -194,5 +203,7 @@ export function createFancyPtySpawn(open: FancyPtyOpen) {
                 pty.kill();
             },
         };
-    };
+    }
+
+    return Object.assign(spawn, { honoursWindowsVerbatimArguments: true as const });
 }

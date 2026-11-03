@@ -7,3 +7,7 @@ coverage/
 # Scratch build dir for default-engine.test.ts (inside the repo so module
 # resolution reaches node_modules; see that file's header).
 .tmp-default-engine/
+
+# Scratch for the windowsVerbatimArguments suites, for the same reason.
+.tmp-verbatim-host/
+.tmp-verbatim-live/

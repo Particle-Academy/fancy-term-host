@@ -61,7 +61,7 @@ export {
 export type { Pidfile } from "./host-locate";
 
 // ── Host wire protocol (for advanced/custom transports) ─────────────────────
-export { PROTOCOL_VERSION, encodeFrame, FrameDecoder } from "./host-protocol";
+export { PROTOCOL_VERSION, HOST_CAPABILITIES, encodeFrame, FrameDecoder } from "./host-protocol";
 export type { ClientMessage, HostMessage, Frame } from "./host-protocol";
 
 // ── Shell detection + the OSC-7 cwd prompt hooks ────────────────────────────

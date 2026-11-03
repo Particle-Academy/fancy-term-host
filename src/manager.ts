@@ -9,6 +9,7 @@ import type { CreateTerminalOpts, TerminalInfo, AttachResult } from './types';
 import type { SettingsProvider } from './ports';
 import type { SnapshotStore } from './sessions';
 import { Scrollback } from './scrollback';
+import { checkVerbatimOption } from './verbatim';
 
 export type { CreateTerminalOpts, TerminalInfo, AttachResult } from './types';
 
@@ -63,8 +64,18 @@ export interface BackendDeps {
     ptySpawn?: PtySpawn;
 }
 
-/** node-pty's `spawn` signature, which fancy-pty's adapter also satisfies. */
-export type PtySpawn = (file: string, args: string[], opts: AdaptedSpawnOptions) => AdaptedPty;
+/**
+ * node-pty's `spawn` signature, which fancy-pty's adapter also satisfies.
+ *
+ * `honoursWindowsVerbatimArguments` is how an engine says it acts on that option.
+ * It has to be declared, because node-pty's own `spawn` takes no such option and
+ * would quote the line without a word. Undeclared, a verbatim spawn on Windows
+ * throws. To keep node-pty and the option, wrap its `spawn`: on Windows pass
+ * `args.join(' ')` as `args`, which it uses as the rest of the command line.
+ */
+export type PtySpawn = ((file: string, args: string[], opts: AdaptedSpawnOptions) => AdaptedPty) & {
+    readonly honoursWindowsVerbatimArguments?: boolean;
+};
 
 /**
  * The default engine, resolved lazily.
@@ -168,6 +179,13 @@ class InProcessBackend extends EventEmitter implements PtyBackend {
                 scrollback: this.scrollback.get(opts.id)?.toString() ?? '',
             };
         }
+        const verbatim = opts.windowsVerbatimArguments;
+        const engine = engineFor(this.deps);
+        checkVerbatimOption(
+            verbatim,
+            engine.honoursWindowsVerbatimArguments === true,
+            'the injected ptySpawn engine (it does not declare honoursWindowsVerbatimArguments)',
+        );
         const shell = opts.shell ?? defaultShell();
         const baseArgs = opts.args ?? defaultShellArgs(shell);
         // Inject the OSC-7 prompt hook (gated by the track_cwd setting) so the
@@ -176,7 +194,10 @@ class InProcessBackend extends EventEmitter implements PtyBackend {
         // shells (PowerShell) need APPENDED launch args, not just env, to load
         // their generated prompt shim.
         const hook = cwdHookSpawn(shell, this.deps.settings);
-        const args = hook.args.length ? [...baseArgs, ...hook.args] : baseArgs;
+        // The hook's args are not appended to a verbatim line: the caller owns all
+        // of it, and they would land after text only the caller has quoted. The
+        // hook's env still applies, so only PowerShell loses cwd tracking here.
+        const args = hook.args.length && verbatim !== true ? [...baseArgs, ...hook.args] : baseArgs;
         const env = {
             ...process.env,
             ...hook.env,
@@ -193,7 +214,7 @@ class InProcessBackend extends EventEmitter implements PtyBackend {
         // OSC 52 copy never fired. Drive `name` from the resolved TERM.
         env.TERM = env.TERM || 'xterm-256color';
 
-        const pty = engineFor(this.deps)(shell, args, {
+        const pty = engine(shell, args, {
             name: env.TERM,
             // Native-convert + validate the requested dir; a stale/foreign/MSYS
             // cwd (e.g. Git Bash's /c/Users/me) would otherwise crash spawn with
@@ -202,6 +223,7 @@ class InProcessBackend extends EventEmitter implements PtyBackend {
             cols: opts.cols ?? 80,
             rows: opts.rows ?? 24,
             env,
+            ...(verbatim === undefined ? {} : { windowsVerbatimArguments: verbatim }),
             // `useConptyDll: true` USED TO BE HERE, and its absence is the
             // point rather than an omission.
             //

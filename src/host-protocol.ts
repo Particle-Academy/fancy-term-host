@@ -23,6 +23,18 @@ import { encodeFrame as encodeAnyFrame, FrameDecoder as AnyFrameDecoder } from '
  */
 export const PROTOCOL_VERSION = 2;
 
+/**
+ * What this host can do beyond protocol 2, sent in `hello-ok`.
+ *
+ * For the additive option an older host CANNOT safely ignore, because ignoring it
+ * changes what runs. `scrollbackMax` can be ignored; `windowsVerbatimArguments`
+ * cannot, since the line would be quoted. Bumping PROTOCOL_VERSION would also stop
+ * that, but the client refuses a mismatched host and lifecycle reaps it, killing
+ * every live terminal on upgrade for an option most consumers never set. A missing
+ * list reads as "no capabilities", which is what an older host means by it.
+ */
+export const HOST_CAPABILITIES = ['windowsVerbatimArguments'] as const;
+
 /** Requests the client sends to the host. `seq` correlates a reply. */
 export type ClientMessage =
     | { kind: 'hello'; seq: number; protocolVersion: number }
@@ -39,6 +51,8 @@ export type ClientMessage =
               env?: Record<string, string>;
               /** Optional, additive: an older host ignores it. */
               scrollbackMax?: number;
+              /** Optional, but an older host must not get it: see HOST_CAPABILITIES. */
+              windowsVerbatimArguments?: boolean;
           };
       }
     | { kind: 'write'; id: string; data: string }
@@ -52,7 +66,14 @@ export type ClientMessage =
 
 /** Pushes + replies the host sends to the client. */
 export type HostMessage =
-    | { kind: 'hello-ok'; seq: number; protocolVersion: number; pid: number }
+    | {
+          kind: 'hello-ok';
+          seq: number;
+          protocolVersion: number;
+          pid: number;
+          /** Absent from a host older than 0.12.0. See HOST_CAPABILITIES. */
+          capabilities?: string[];
+      }
     | {
           kind: 'created';
           seq: number;

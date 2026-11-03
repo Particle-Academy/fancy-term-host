@@ -11,6 +11,7 @@ import {
 } from './host-protocol';
 import type { SnapshotStore } from './sessions';
 import { Scrollback, DEFAULT_SCROLLBACK_MAX } from './scrollback';
+import { checkVerbatimOption } from './verbatim';
 
 /**
  * HostClient — the Tier 3 PtyBackend that proxies every call to the DETACHED
@@ -92,6 +93,8 @@ export class HostClient extends EventEmitter implements PtyBackend {
     private readonly retained = new Set<string>();
     /** Host pid, learned from hello-ok — surfaced for diagnostics. */
     hostPid = 0;
+    /** Learned from hello-ok. Empty for an older host, which sends none. */
+    private hostCapabilities: readonly string[] = [];
     private connected = false;
 
     private constructor(
@@ -158,6 +161,7 @@ export class HostClient extends EventEmitter implements PtyBackend {
                         );
                     }
                     client.hostPid = hello.pid;
+                    client.hostCapabilities = hello.capabilities ?? [];
                     client.connected = true;
                     await client.seedFromHost();
                     client.startHeartbeat(heartbeatMs);
@@ -444,6 +448,13 @@ export class HostClient extends EventEmitter implements PtyBackend {
                 scrollback: existing.scrollback.toString(),
             };
         }
+        // Before the mirror is touched, so a refusal leaves no phantom terminal. A
+        // host running an older build would ignore the field and quote the line.
+        checkVerbatimOption(
+            opts.windowsVerbatimArguments,
+            this.hostCapabilities.includes('windowsVerbatimArguments'),
+            `the running pty-host (pid ${this.hostPid}, older than fancy-term-host 0.12.0)`,
+        );
         // Cold create: seed the mirror immediately (pid 0 until the host echoes
         // the real one), fire the create request, and surface any on-disk
         // snapshot exactly like the in-process backend does on a cold spawn.

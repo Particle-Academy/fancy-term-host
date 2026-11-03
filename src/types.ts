@@ -31,6 +31,26 @@ export interface CreateTerminalOpts {
      * ignores it and keeps the default, which is the 0.10.0 behaviour.
      */
     scrollbackMax?: number;
+    /**
+     * Windows: join `args` with single spaces and quote nothing, as Node's
+     * `child_process` option of the same name does. For running a shell line
+     * through `cmd.exe`, which does not read the `\"` the default quoting produces.
+     *
+     * **Never pass untrusted text through this. It is command injection.** All
+     * quoting becomes yours, and in a `cmd.exe` line `&`, `|`, `<`, `>`, `^` and
+     * `%VAR%` are live. Through `cmd.exe /d /s /c`, wrap the whole line in one more
+     * pair of quotes. See the README.
+     *
+     * `shell` is still the program, not part of the line: pass it unquoted.
+     * Ignored on Linux and macOS. A non-boolean throws. Fixed at spawn: passing it
+     * on an attach to a live pty changes nothing.
+     *
+     * Throws on Windows where it cannot be honoured, rather than quoting the line
+     * anyway: an injected `ptySpawn` that does not declare
+     * `honoursWindowsVerbatimArguments`, or a detached host older than 0.12.0.
+     * The PowerShell cwd hook's launch args are not appended to a verbatim line.
+     */
+    windowsVerbatimArguments?: boolean;
 }
 
 export interface TerminalInfo {

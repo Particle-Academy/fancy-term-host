@@ -15,6 +15,41 @@ upgrading.
 
 ## [Unreleased]
 
+### Added
+
+- **`CreateTerminalOpts.windowsVerbatimArguments`, for running a shell line on
+  Windows.** It reaches fancy-pty's `open()` on the in-process backend. On the
+  detached host, which runs on node-pty, it becomes node-pty's string form of
+  `args`, which does the same thing. `cmd.exe` does not read the `\"` that the
+  default quoting produces, so a line with a quoted path failed through
+  `cmd.exe /c` even with no spaces in the path: `'\"C:\...\node.exe\"' is not
+  recognized`, or `The network path was not found.` with a second quoted argument.
+
+  **All quoting becomes the caller's, so passing untrusted text through it is
+  command injection.** Through `cmd.exe /d /s /c`, wrap the line in an outer pair
+  of quotes. See the README. Ignored on Linux and macOS. A non-boolean throws.
+
+  **It throws on Windows rather than quoting the line anyway**, if an injected
+  `ptySpawn` does not declare `honoursWindowsVerbatimArguments`, or if the running
+  detached host predates this release. `hello-ok` gained an optional
+  `capabilities` list for that (exported as `HOST_CAPABILITIES`). `PROTOCOL_VERSION`
+  stays 2, so an older host still attaches and keeps its terminals.
+
+  The PowerShell cwd hook's launch args are not appended to a verbatim line.
+
+  **What you must DO:** nothing, unless you want the option. The default is off,
+  and a spawn without it passes the same options as before. To use it on the
+  detached backend, end any host started by an older release (`shutdownHost()`,
+  which also ends its terminals). To use it with an injected node-pty, wrap its
+  `spawn` as `PtySpawn` describes.
+
+### Changed
+
+- **`@particle-academy/fancy-pty` floor raised to `>=0.3.0 <2.0`**, the first
+  release with the option. An older one ignores the unknown field and quotes the
+  line. **What you must DO:** nothing. The range only drops releases this option
+  cannot work on, and a fresh install already resolved the newest one.
+
 ### Security
 
 - Update Vitest to 4.1.12 for security fixes; dev toolchain only, nothing to do.

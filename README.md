@@ -131,6 +131,62 @@ with `fancy-term`'s controlled `output` buffer and `onData` and you have a live
 terminal that an agent can also inhabit (via the `registerTerminalBridge` in
 `@particle-academy/agent-integrations`).
 
+## Running a shell line on Windows
+
+`args` is a list, and by default it is quoted into a command line by the rules
+ordinary Windows programs parse. `cmd.exe` is not one of them. It does not read
+`\"` as a quote, so a quoted path in a line passed to `cmd.exe /c` fails, even
+with no spaces in the path: `'\"C:\...\node.exe\"' is not recognized`, or `The
+network path was not found.` if the line has a second quoted argument.
+
+`windowsVerbatimArguments: true` is Node's `child_process` option of the same
+name. It joins `args` with single spaces and changes nothing else:
+
+```ts
+// The line carries an outer pair of quotes, exactly as Node's `shell: true` does.
+const line = `"C:\\Program Files\\nodejs\\node.exe" --version`;
+backend.create({
+  id: "t2",
+  cwd: "C:\\work",
+  shell: "cmd.exe",
+  args: ["/d", "/s", "/c", `"${line}"`],
+  windowsVerbatimArguments: true,
+});
+```
+
+> **Warning: never pass untrusted text through this option. It is command
+> injection.** All quoting becomes your job, and in a line given to `cmd.exe`,
+> `&`, `|`, `<`, `>`, `^` and `%VAR%` are live. A filename, a branch name or any
+> other value you did not write can run commands of its own. Quoting does not
+> make it safe: the value can contain a `"` that closes your quotes. If you have
+> a program and a list of arguments, use the default mode, which needs no quoting
+> from you and starts no shell.
+
+- **Outer quotes matter, and leaving them off can run the wrong program.** `/s`
+  makes `cmd.exe` remove the first and the last `"` on the line, so
+  `"C:\a b\x.exe" --flag` becomes `C:\a b\x.exe --flag`, and `cmd.exe` then looks
+  for a program called `C:\a`. Wrap the whole line in one more pair, as above,
+  every time.
+- **`shell` is still the program, not part of the line.** Pass it unquoted. It is
+  quoted for you if it has whitespace.
+- **It works on both backends.** In-process it goes to fancy-pty's option of the
+  same name, and on the detached host it becomes node-pty's string form of `args`.
+- **It fails rather than quoting the line anyway.** On Windows, `create` throws
+  and spawns nothing if whatever would run the spawn cannot honour the flag:
+  - an injected `ptySpawn` that does not declare
+    `honoursWindowsVerbatimArguments`. node-pty's own `spawn` takes no such
+    option, so wrap it and declare it (see `PtySpawn`).
+  - a detached host started by a release before 0.12.0, which would ignore the
+    field. It is still running after you upgrade, and it keeps its terminals, so
+    nothing replaces it for you. `shutdownHost()` ends it, and those terminals.
+- **PowerShell loses cwd tracking on a verbatim line.** The hook's launch args are
+  not appended to a line you own. Its other effects, and every default spawn, are
+  unchanged.
+- **On Linux and macOS the option is ignored**, as in Node. A non-boolean value
+  throws on every platform.
+- **Default off, and fixed at spawn.** A spawn without it is what it always was,
+  and passing it on an attach to a live pty changes nothing.
+
 ## Persistence tiers
 
 Switchable behind one `PtyBackend` interface (see [`docs/persistence.md`](./docs/persistence.md)):
