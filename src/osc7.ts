@@ -41,7 +41,7 @@ export function parseFileUrl(payload: string): string | null {
     }
 
     // Windows drive paths arrive as "/C:/Users/...". Drop the leading slash and
-    // flip to backslashes so the value matches what node-pty/Electron expect as
+    // flip to backslashes so the value matches what a pty and Electron expect as
     // a cwd on Windows.
     const winDrive = /^\/([A-Za-z]):(.*)$/.exec(decoded);
     if (winDrive) {

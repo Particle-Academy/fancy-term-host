@@ -4,7 +4,7 @@
  * Git Bash / MSYS reports `$PWD` in MSYS form (`/c/Users/me`), not native
  * Windows (`C:\Users\me`). The OSC-7 hook emits that raw, and `parseFileUrl`
  * only converts the drive-colon form (`/C:/...`), so an MSYS path flows through
- * unchanged. Handing `/c/Users/me` to node-pty as a working dir makes Windows
+ * unchanged. Handing `/c/Users/me` to a pty as a working dir makes Windows
  * fail with ERROR_DIRECTORY (error code 267) — terminal creation crashes.
  *
  * Two small, OS-agnostic helpers fix this at the source:

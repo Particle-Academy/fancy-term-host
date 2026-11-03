@@ -1,7 +1,7 @@
 /**
  * Length-prefixed JSON framing for a local IPC stream.
  *
- * PURE: node's `Buffer` and nothing else — no electron, no node-pty, no net. It
+ * PURE: node's `Buffer` and nothing else — no electron, no pty engine, no net. It
  * is the one implementation of the framing: the pty-host and its client use it
  * through `host-protocol.ts`, and a second per-user host uses it through the
  * `./ipc` subpath (#12). Keep it free of imports, or that subpath starts loading
@@ -17,7 +17,7 @@
 const LENGTH_BYTES = 4;
 
 /** Hard cap on a single frame (16 MB). Guards against a runaway/garbage length
- *  prefix allocating unbounded memory. node-pty data chunks are tiny; a
+ *  prefix allocating unbounded memory. pty data chunks are tiny; a
  *  serialized scrollback is bounded well under this. */
 export const MAX_FRAME = 16 * 1024 * 1024;
 

@@ -1,7 +1,7 @@
 // Public surface for @particle-academy/fancy-term-host.
 //
 // The headless Node terminal backend that pairs with the browser-side
-// @particle-academy/fancy-term <Terminal>: it owns the PTYs (via node-pty) and
+// @particle-academy/fancy-term <Terminal>: it owns the PTYs (via fancy-pty) and
 // the T1/T2/T3 persistence engine — snapshot+replay, retained PTYs, and a
 // detached pty-host — behind four injected ports. See docs/ports.md.
 

@@ -179,18 +179,18 @@ export function pidfileUsable(pf: Pidfile | null, protocolVersion: number = PROT
 /**
  * Resolve the compiled pty-host script on disk, trying multiple candidate paths
  * so it works in BOTH `npm run dev` (script at app/pty-host.js next to
- * background.js) AND a packaged asar build. node-pty's native binding can't load
- * from inside an asar, so the host (which requires node-pty) must run UNPACKED —
- * `app.asar.unpacked/...`. We try the unpacked path first, then the in-asar path,
- * then a dev-relative path. Returns the first that exists, or null.
+ * background.js) AND a packaged asar build. We try the unpacked path first, then
+ * the in-asar path, then a dev-relative path. Returns the first that exists, or null.
+ * From the unpacked tree the host can only import a fancy-pty whose JavaScript is
+ * unpacked too, so unpack all of it. See docs/packaging.md.
  *
  * `dirname` is main/background's __dirname (the directory the compiled main
  * bundle lives in). The host script is emitted alongside it as `pty-host.js`.
  */
 export function resolveHostScript(dirname: string): string | null {
     const candidates = [
-        // Packaged: node-pty must be unpacked, so run the host from the unpacked
-        // tree too (its require('node-pty') resolves to the unpacked .node).
+        // Packaged: a standalone Node cannot read an asar at all, so prefer the
+        // unpacked tree.
         dirname.includes(`app.asar${path.sep}`) || dirname.includes('app.asar/')
             ? dirname.replace(
                   /app\.asar([\\/])/,

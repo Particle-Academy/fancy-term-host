@@ -16,7 +16,7 @@ import { checkVerbatimOption } from './verbatim';
 /**
  * HostClient — the Tier 3 PtyBackend that proxies every call to the DETACHED
  * pty-host over a local socket (named pipe on Windows, unix domain socket on
- * POSIX). The real node-pty instances live in the host, so they survive a full
+ * POSIX). The real ptys are owned by the host, so they survive a full
  * quit of the Electron app; the client just relays create/write/resize/kill and
  * fans the host's pushed `data`/`exit` messages out to subscribers.
  *

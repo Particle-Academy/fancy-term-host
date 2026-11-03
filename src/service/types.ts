@@ -23,9 +23,10 @@ export interface ServiceRuntime {
     /** Absolute path to a standalone `node` (never `electron`). */
     nodePath: string;
     /**
-     * Directory holding an ABI-matched `node-pty` build for `nodePath` (added to
-     * the service's `NODE_PATH`). Omit if node-pty resolves normally from the
-     * host script's own `node_modules`.
+     * Added to the service's `NODE_PATH`.
+     *
+     * @deprecated The host no longer runs on node-pty, so nothing needs an
+     * ABI-matched build. Still honoured, so an existing config keeps working.
      */
     nodePtyDir?: string;
     /** How this runtime was resolved (diagnostics only). */

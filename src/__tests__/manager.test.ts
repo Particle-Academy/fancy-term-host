@@ -1,12 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 /**
- * Manager covers pty I/O + lifecycle, all of which require node-pty's
- * native binding to be functional. Vitest aliases `electron` but does
- * NOT mock node-pty — that would require a per-test fixture for the
- * shell behaviour we don't have yet. For now this file only exercises
- * the pure helpers; the integration surface is covered by the manual
- * `/terminal` smoke route in dev.
+ * Pty I/O + lifecycle live in default-engine.test.ts, exit-delivery.test.ts and
+ * host-live.test.ts. This file only exercises the pure helpers.
  */
 
 describe('defaultShell', () => {

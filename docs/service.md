@@ -9,9 +9,9 @@ detached backends never pull it in. Import it only in the desktop/Electron host.
 
 ## The problem it solves
 
-The detached host (T3) is spawned with `process.execPath` + `ELECTRON_RUN_AS_NODE`
-so `node-pty`'s native binding matches the Electron ABI. But the running host
-then **holds the app's executable open**. On an auto-update (NSIS / Squirrel), the
+The detached host (T3) is usually spawned with `process.execPath` +
+`ELECTRON_RUN_AS_NODE`, since that is the Node an app has to hand. But the running
+host then **holds the app's executable open**. On an auto-update (NSIS / Squirrel), the
 installer must overwrite that binary — the surviving host pins it, so the update
 can't proceed, and killing the host to let it through loses the live sessions.
 
@@ -48,7 +48,7 @@ The one call most consumers need. It:
 const r = await ensureHostService({
   label: "academy.particle.genie.ptyhost",
   userDataDir: app.getPath("userData"),
-  runtime: { nodePath: "/opt/genie/runtime/node", nodePtyDir: "/opt/genie/native" },
+  runtime: { nodePath: "/opt/genie/runtime/node" },
 });
 if (!r.ok) {
   // fall back — the service couldn't be set up (perms / unsupported / no runtime)
@@ -74,11 +74,12 @@ interface HostServiceConfig {
 }
 ```
 
-## The runtime / node-pty ABI question (the important part)
+## The runtime
 
 The service must **not** run on the consumer's Electron binary (that reintroduces
-the pin). So `node-pty` must load against whatever runtime the service uses.
-`resolveServiceRuntime()` picks one, in order:
+the pin). It runs on a standalone Node of the supported version, and nothing has to
+match that Node's ABI, because the host's pty engine is a helper executable rather
+than an addon. `resolveServiceRuntime()` picks one, in order:
 
 1. an explicit `nodePath` you pass,
 2. `$FANCY_TERM_NODE`,
@@ -89,18 +90,12 @@ the pin). So `node-pty` must load against whatever runtime the service uses.
 It **refuses** an Electron binary outright, and returns `null` when nothing safe
 is found (so the caller falls back).
 
-You still have to make sure that runtime can load `node-pty`:
+**A standalone Node cannot read an asar.** So the host script and everything it
+imports have to be on disk: unpack `@particle-academy/fancy-term-host` and all of
+`@particle-academy/fancy-pty` (see [`docs/packaging.md`](./packaging.md)).
 
-- **Ship a standalone Node** with the app and build/prebuild `node-pty` for its
-  ABI (`node-gyp` / `prebuild-install`), then point `runtime.nodePath` at it and
-  `runtime.nodePtyDir` at the directory holding the ABI-matched `.node` (it's
-  added to the service's `NODE_PATH`), **or**
-- rely on a system Node that already has a compatible `node-pty` resolvable from
-  the host script's own `node_modules`.
-
-> This is deliberately a consumer/CI decision, not something the package bundles:
-> shipping prebuilt native binaries for every OS×arch belongs in your app's build
-> pipeline. The service layer itself is pure JS.
+`runtime.nodePtyDir` is deprecated and does nothing useful now. It is still added to
+`NODE_PATH` if you pass it, so an existing config keeps working.
 
 ## What each platform installs
 
@@ -121,6 +116,11 @@ encodes the host `PROTOCOL_VERSION`. When a consumer update bumps the protocol,
 incompatible host alive. A reinstall restarts the host, so **snapshot live
 sessions (the T1 path) or call `shutdownHost()` first** if you need history to
 survive the handoff.
+
+**The move to fancy-pty did not bump the protocol, so it does not reinstall anything.**
+A service host started before it keeps running node-pty, with its terminals, until it
+is stopped. `HostClient.hostEngine()` says which you are connected to; the next host
+started from the unit runs the current code.
 
 ## Graceful fallback
 

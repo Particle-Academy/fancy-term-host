@@ -6,16 +6,16 @@
 
 `fancy-term` is the browser-side React `<Terminal>` — it renders xterm.js and
 deliberately **never spawns a shell**. `fancy-term-host` is the other half: the
-Node process that **owns the PTYs** (via `node-pty`) and a **T1/T2/T3 persistence
-engine** — snapshot+replay, retained PTYs, and a detached pty-host — behind four
-small **injected ports**. It runs anywhere Node runs (Electron main, a Laravel
-queue worker, a plain server): OS-agnostic by construction, with exactly one
-third-party dependency — `node-pty`, declared **optional** so a pure-JS consumer
-can skip its native build.
+Node process that **owns the PTYs** (via
+[`@particle-academy/fancy-pty`](https://www.npmjs.com/package/@particle-academy/fancy-pty))
+and a **T1/T2/T3 persistence engine** — snapshot+replay, retained PTYs, and a
+detached pty-host — behind four small **injected ports**. It runs anywhere Node
+runs (Electron main, a Laravel queue worker, a plain server): OS-agnostic by
+construction, with no third-party runtime dependency.
 
-It can't live inside `fancy-term` or the other UI packages — `node-pty` is a
-native addon that would break their browser builds — so it's an independent
-sibling you install alongside.
+It can't live inside `fancy-term` or the other UI packages — a pty needs a process
+to spawn, which a browser build doesn't have — so it's an independent sibling you
+install alongside.
 
 ## Install
 
@@ -23,45 +23,60 @@ sibling you install alongside.
 npm install @particle-academy/fancy-term-host
 ```
 
-**`node-pty` comes with it** — it is an `optionalDependency` as of 0.9.0, so npm
-installs it for you and you no longer name it yourself. Under Electron you still
-own the `asar-unpack` so its `.node` binary loads outside the archive; see below.
+**`fancy-pty` comes with it**, as a plain dependency. It is a small helper executable
+per pty plus pure JavaScript: no native addon, no rebuild and no install script. Both
+backends run on it, in process and detached.
 
-**Why optional rather than a peer, or a plain dependency** — it is the one
-packaging decision in here that is not obvious, and getting it wrong ships
-broken installers that build green:
+`./ipc` still loads none of it, so a process that uses only that subpath starts nothing
+native. The binaries just sit on disk.
 
-- **A peer is invisible to electron-builder.** Through 0.8.0 `node-pty` was a
-  peer, and `app-builder-lib` builds the `node_modules` it packs from
-  `{ ...dependencies, ...optionalDependencies }` only
-  (`out/node-module-collector/nodeModulesCollector.js:169`) — `peerDependencies`
-  appears nowhere in that collector, and `files` globs cannot add to
-  `node_modules`. So a packaged app shipped with **no node-pty at all** and the
-  build reported success.
-- **Optional, not plain, because `./ipc` exists to be native-free.** That subpath
-  is there so a process can ship with no native addon at all; `optionalDependencies`
-  is still collected by electron-builder, while a consumer of only `./ipc` can
-  skip the build with `npm install --omit=optional`.
-- **The trade:** if the native build fails, you find out when a PTY is first
-  requested rather than at install. Acceptable because a packaged app cannot get
-  past `fancyTermAfterPack` with a missing build — it fails the pack.
+`node-pty` is no longer installed. You can still inject it as `ptySpawn` on the
+in-process backend, from your own dependencies; the detached host has one engine.
 
 ### Packaging into an Electron app
 
-A packaged `node-pty` won't spawn a terminal on **any** OS until three per-OS
-rebuild gaps are patched (Windows `conpty.dll` subdir, unsigned macOS
-`spawn-helper`, Linux `+x`). `fancy-term-host` ships the fix as an
-`electron-builder` `afterPack` hook — wire it once:
+A file inside an asar has no path the OS can execute, so fancy-pty has to be unpacked.
+Unpack all of it, not just `bin/`, because the detached host loads its JavaScript too
+when it runs from the unpacked tree:
 
 ```js
 const { fancyTermAfterPack } = require('@particle-academy/fancy-term-host/electron');
 module.exports = {
-  asarUnpack: ['**/node_modules/node-pty/**'],
+  asarUnpack: ['**/node_modules/@particle-academy/fancy-pty/**'],
   afterPack: (context) => fancyTermAfterPack(context),
 };
 ```
 
-See [`docs/packaging.md`](./docs/packaging.md) for the full breakdown.
+The hook fails the check (`ok: false`) if the helper for your target isn't there. See
+[`docs/packaging.md`](./docs/packaging.md).
+
+## Which program a name starts on Windows
+
+Through both backends, a name with no directory part is looked up in the system
+directory, then the Windows directory, then the absolute entries of `PATH`. The current
+directory, the folder the host runs from, relative `PATH` entries and the `cwd` option
+are not searched. So `cmd.exe` means the system's, wherever your app was started.
+
+- **A program in the current directory has to be asked for:** `.\tool.exe`, or an
+  absolute path.
+- **A `.cmd` or `.bat` needs its extension**, `npm.cmd` and not `npm`, and its arguments
+  are refused if `cmd.exe` would act on them.
+
+The rules are in
+[fancy-pty's README](https://github.com/Particle-Academy/fancy-pty#which-program-a-name-starts-on-windows).
+
+## When a terminal can't start
+
+On the in-process backend, a refusal throws from `create()`. On the detached host
+`create()` returns before the host has answered, so the same failure arrives as events:
+
+```ts
+backend.on("create-error", (id, { message }) => log.warn(id, message)); // the reason
+// then `data` with the same words, then `exit` with code 1
+```
+
+The terminal is gone from `list()` by the time you hear it. An app wired only to `data`
+and `exit` shows the reason and closes the terminal without doing anything else.
 
 ## Wire it up
 
@@ -169,13 +184,12 @@ backend.create({
   every time.
 - **`shell` is still the program, not part of the line.** Pass it unquoted. It is
   quoted for you if it has whitespace.
-- **It works on both backends.** In-process it goes to fancy-pty's option of the
-  same name, and on the detached host it becomes node-pty's string form of `args`.
+- **It works on both backends.** Both hand it to fancy-pty's option of the same name.
 - **It fails rather than quoting the line anyway.** On Windows, `create` throws
   and spawns nothing if whatever would run the spawn cannot honour the flag:
   - an injected `ptySpawn` that does not declare
     `honoursWindowsVerbatimArguments`. node-pty's own `spawn` takes no such
-    option, so wrap it and declare it (see `PtySpawn`).
+    option, so if you inject it, wrap it and declare it (see `PtySpawn`).
   - a detached host started by a release before 0.12.0, which would ignore the
     field. It is still running after you upgrade, and it keeps its terminals, so
     nothing replaces it for you. `shutdownHost()` ends it, and those terminals.
@@ -230,8 +244,8 @@ the core connect-or-spawn-or-fall-back automatically. (`require.resolve(
 ### Reusing the transport for another host
 
 The pty-host's framing and per-user pipe/pidfile helpers are exported from
-`@particle-academy/fancy-term-host/ipc`, which loads **no native module**, so a
-second per-user background process can use them without node-pty:
+`@particle-academy/fancy-term-host/ipc`, which loads **no pty engine**, so a second
+per-user background process can use them and start nothing native:
 
 ```ts
 import net from "node:net";

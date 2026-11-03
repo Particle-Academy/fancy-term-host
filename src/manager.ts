@@ -57,9 +57,10 @@ export interface BackendDeps {
      * than a promise about the code. Measured on four platforms: 0.000 threads,
      * 0.000 handles, <= 0.044 MB per exited pty.
      *
-     * node-pty is not removed as an OPTION, because the `darwin-x64` and
-     * `win32-arm64` builds have not run natively anywhere yet (their code paths
-     * have, on the other arch of each OS). Injecting it back is one line.
+     * Injecting node-pty stays possible on this backend, from your own
+     * dependencies, because the `darwin-x64` and `win32-arm64` builds have not run
+     * natively anywhere yet (their code paths have, on the other arch of each OS).
+     * It is one line. The detached host has no such port: it runs fancy-pty only.
      */
     ptySpawn?: PtySpawn;
 }
@@ -80,10 +81,8 @@ export type PtySpawn = ((file: string, args: string[], opts: AdaptedSpawnOptions
 /**
  * The default engine, resolved lazily.
  *
- * Lazy because `fancy-pty` is an `optionalDependency`: a consumer of the
- * pure-JS `./ipc` subpath can `npm install --omit=optional` and must not have
- * this module throw at IMPORT time for an engine they never use. That is the
- * same reason node-pty was optional, preserved rather than quietly dropped.
+ * Lazy so that a consumer who injects `ptySpawn`, or only imports this module for
+ * its other exports, never loads an engine they do not use.
  */
 let defaultSpawn: PtySpawn | undefined;
 function engineFor(deps: BackendDeps): PtySpawn {
@@ -128,8 +127,7 @@ const inertDeps: BackendDeps = {
 };
 
 /**
- * InProcessBackend — node-pty instances owned directly by the Electron main
- * process. This is the historical TerminalManager body verbatim; it now also
+ * InProcessBackend — ptys owned directly by the Electron main process. This is the historical TerminalManager body verbatim; it now also
  * formally implements the PtyBackend interface so the IPC layer can hold it
  * behind that abstraction interchangeably with the Tier 3 HostClient.
  *
@@ -460,8 +458,7 @@ export function configureInProcessBackend(deps: BackendDeps): void {
 
 /**
  * In-process backend singleton. Created lazily so importing this module from a
- * test context doesn't attempt to load node-pty before vi.mock has had a chance
- * to substitute it. This is ALSO the Tier 1/Tier 2 fallback floor: the quit-time
+ * test context doesn't attempt to load the engine before a fake is injected. This is ALSO the Tier 1/Tier 2 fallback floor: the quit-time
  * snapshot helpers reach for the in-process scrollback through it.
  */
 let inProcess: InProcessBackend | null = null;

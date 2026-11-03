@@ -46,7 +46,7 @@
 
 import type { Scrollback } from './scrollback';
 
-/** The slice of node-pty's `IPty` this registry needs. Kept minimal so tests need no native module. */
+/** The slice of a pty this registry needs. Kept minimal so tests need no real engine. */
 export interface RegistryPty {
     readonly pid: number;
     kill(): void;

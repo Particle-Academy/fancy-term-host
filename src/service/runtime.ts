@@ -21,7 +21,7 @@ import type { ServiceRuntime } from './types';
 export interface ResolveRuntimeOptions {
     /** Explicit standalone node path (wins). */
     nodePath?: string;
-    /** Directory with an ABI-matched node-pty for that runtime. */
+    /** @deprecated See ServiceRuntime.nodePtyDir. */
     nodePtyDir?: string;
     /** Environment to read overrides from. Defaults to `process.env`. */
     env?: NodeJS.ProcessEnv;

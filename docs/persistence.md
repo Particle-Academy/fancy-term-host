@@ -69,8 +69,8 @@ their scrollback ring buffers. Because it's a different process, the shells
 
 ## T3+ — per-user OS service (`/service`)
 
-The detached host above is launched with the consumer's binary (Electron-as-node,
-for node-pty's ABI). That means the running host **pins the app executable**, so
+The detached host above is usually launched with the consumer's binary
+(Electron-as-node). That means the running host **pins the app executable**, so
 an Electron auto-update can't overwrite it without first killing the host — and
 killing it loses the live sessions T3 exists to protect.
 
@@ -92,7 +92,7 @@ const result = await ensureHostService({
   userDataDir: app.getPath("userData"),
   // A STANDALONE node — never your Electron binary. Auto-resolved from
   // $FANCY_TERM_NODE / PATH if omitted; pass one explicitly to be sure.
-  runtime: { nodePath: "/opt/genie/runtime/node", nodePtyDir: "/opt/genie/native" },
+  runtime: { nodePath: "/opt/genie/runtime/node" },
 });
 
 if (result.ok) {
@@ -109,7 +109,7 @@ so a protocol bump reinstalls the unit instead of leaving an incompatible host
 running. Also exported: `installHostService` / `uninstallHostService` /
 `startHostService` / `stopHostService` / `isServiceInstalled` / `serviceStatus`,
 plus `resolveServiceRuntime` and the pure `buildServiceDescriptor`. Full guide +
-the node-pty ABI notes: [`docs/service.md`](./service.md).
+the runtime notes: [`docs/service.md`](./service.md).
 
 > Upgrading the service across a host-protocol bump restarts the host — snapshot
 > live sessions (the T1 path) or call `shutdownHost()` first if you need history
