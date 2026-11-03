@@ -15,6 +15,8 @@ upgrading.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-02
+
 ### Added
 
 - **`CreateTerminalOpts.windowsVerbatimArguments`, for running a shell line on
