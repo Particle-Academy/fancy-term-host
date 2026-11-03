@@ -230,9 +230,11 @@ The bundled host script is resolvable without knowing the dist layout:
 import { spawn } from "node:child_process";
 import { ptyHostScriptPath } from "@particle-academy/fancy-term-host";
 
-const child = spawn(process.execPath, [ptyHostScriptPath(), userDataDir], {
+const child = spawn(process.execPath, [ptyHostScriptPath()], {
   detached: true,
+  windowsHide: true,
   stdio: "ignore",
+  env: { ...process.env, GENIE_USERDATA: userDataDir },
 });
 child.unref();
 ```

@@ -49,8 +49,8 @@ export interface SnapshotStoreConfig {
  * The detached-host spawn surface (T3). The connect-or-spawn-or-fallback LOGIC
  * is core; only these three OS/Electron-specific operations are injected:
  *   - resolveHostScript(): dev vs asar.unpacked path resolution.
- *   - spawnDetached(): the ABI-correct exec (Electron: execPath +
- *     ELECTRON_RUN_AS_NODE), detached + unref.
+ *   - spawnDetached(): run the script on a Node (Electron: execPath +
+ *     ELECTRON_RUN_AS_NODE), detached + windowsHide + unref.
  *   - userDataDir(): the directory pidfile/socket live under (was
  *     app.getPath('userData')).
  */

@@ -165,6 +165,7 @@ export function electronHostSpawner(dirname: string): HostSpawner {
     spawnDetached: (scriptPath, env) => {
       const child = spawn(process.execPath, [scriptPath], {
         detached: true,
+        windowsHide: true,
         stdio: "ignore",
         env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", ...env },
       });
@@ -187,6 +188,7 @@ const hostSpawner: HostSpawner = {
   spawnDetached: (scriptPath, env) => {
     const child = spawn(process.execPath, [scriptPath], {
       detached: true,
+      windowsHide: true,
       stdio: "ignore",
       env: { ...process.env, ...env },
     });

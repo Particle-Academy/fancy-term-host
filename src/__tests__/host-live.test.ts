@@ -243,9 +243,9 @@ describe('a real shell through the real host', () => {
         // Refused before anything is started, on every OS, so the file need not exist.
         client.create({ id: 'a', cwd: scratch, shell: 'fth-absent.cmd', args: ['one&two'] });
         const err = await until('the create error', () => on('a').createError);
-        expect(err.message).toMatch(/batch|cmd/i);
+        expect(err.message).toMatch(/refus/i);
         await until('the exit', () => on('a').exit);
-        expect(on('a').data).toMatch(/batch|cmd/i);
+        expect(on('a').data).toMatch(/refus/i);
         expect(client.list()).toEqual([]);
     }, 60_000);
 
@@ -284,6 +284,14 @@ describe('a real shell through the real host', () => {
         fs.writeFileSync(noisy, 'for (let i = 0; i < 3000; i++) console.log("line " + i);\nsetInterval(() => {}, 1000);\n');
         client.create({ id: 'a', cwd: scratch, shell: process.execPath, args: [noisy], cols: 90, rows: 30, scrollbackMax: 1000 });
         await until('the last line', () => on('a').data.includes('line 2999'));
+        // The console keeps repainting for a moment, so let it finish before comparing.
+        let length = -1;
+        await until('the output to stop', () => {
+            const same = on('a').data.length === length;
+            length = on('a').data.length;
+            return same;
+        });
+        await sleep(300);
         const whole = on('a').data;
         client.disconnect();
         const second = await HostClient.connect(readPidfile(userData)!.socketPath, noSnapshots, 5000, {
@@ -293,7 +301,9 @@ describe('a real shell through the real host', () => {
         running[running.length - 1].client = second;
         const kept = second.getScrollback('a')!;
         expect(kept.length).toBe(1000);
-        expect(whole.endsWith(kept)).toBe(true);
+        // Includes, not endsWith: a repaint can land between `whole` and the disconnect.
+        expect(whole.includes(kept), 'the kept text is not from this stream').toBe(true);
+        expect(kept).toContain('line 2999');
     }, 60_000);
 
     it('a shutdown leaves no pty or host behind', async () => {
@@ -473,7 +483,7 @@ describe.runIf(isWindows)('which program a name starts through the host', () => 
 
         h.client.create({ id: 'bad', cwd: dir, shell: script, args: [`a&echo x>"${injected}"`] });
         const err = await until('the refusal', () => h.on('bad').createError);
-        expect(err.message).toMatch(/batch|cmd/i);
+        expect(err.message).toMatch(/refus/i);
         await until('the exit', () => h.on('bad').exit);
         await sleep(500);
         expect(fs.existsSync(ran)).toBe(false);
