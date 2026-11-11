@@ -15,6 +15,13 @@ upgrading.
 
 ## [Unreleased]
 
+### Changed
+
+- **Releases need a lab-run certificate.** `publish.yml` gains a read-only
+  `lab-certificate` job that every publishing job needs: a tag is published only
+  when the fancy-labs lab has certified that exact version and commit. Consumers
+  do nothing; this changes how releases are cut, not what the package does.
+
 ## [0.13.0] - 2026-11-02
 
 **The detached host moves from `node-pty` to `@particle-academy/fancy-pty`,** on
@@ -439,7 +446,6 @@ and expect `0.10.0` proper to follow once the acceptance is green.
   reaching around the seam, and it broke the moment the engine stopped being
   imported by name.
 
-
 ### Added
 
 - **A `fancy-pty` backend adapter** (`src/fancy-pty.ts`), inert until wired —
@@ -480,7 +486,6 @@ and expect `0.10.0` proper to follow once the acceptance is green.
   threads, 18.27 handles and 13.303 MB per EXITED pty**, at 3.3 s per spawn —
   120 cycles exhausted a machine in six minutes. fancy-pty gives each pty its
   own process, so an exited terminal cannot retain anything in this one.
-
 
 ### Changed
 
@@ -749,7 +754,6 @@ and expect `0.10.0` proper to follow once the acceptance is green.
 ### Why
 
 These are the kit 0.5 platform floors, applied across every package at once so a consumer never has to resolve a mix. **No API changed, nothing was removed, nothing was renamed** — only what the package requires.
-
 
 ## 0.3.1 — 2026-07-15
 
