@@ -64,7 +64,8 @@
         "docs",
         "README.md",
         "LICENSE",
-        "CHANGELOG.md"
+        "CHANGELOG.md",
+        "AGENTS.md"
     ],
     "scripts": {
         "build": "tsup",
